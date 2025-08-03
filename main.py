@@ -1,7 +1,7 @@
 # Idea Spark - 新規事業開発支援WebアプリケーションのメインAPI
 from fastapi import FastAPI, HTTPException, Depends, Cookie, Response, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, List
 from dotenv import load_dotenv
 import logging
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # モデルとサービスのインポート
 from models import *
 from services import auth_service, get_current_user, FileService, RAGService, CanvasService
-from crud import UserCRUD, ProjectCRUD, DocumentCRUD, ResearchCRUD, InterviewCRUD
+from crud import UserCRUD, ProjectCRUD, DocumentCRUD, ResearchCRUD, InterviewCRUD, VectorStoreCRUD
 from database import db_connection, test_database_connection
 
 app = FastAPI(
@@ -51,6 +51,7 @@ canvas_service = CanvasService()
 user_crud = UserCRUD(db_connection)
 project_crud = ProjectCRUD(db_connection)
 document_crud = DocumentCRUD(db_connection)
+vector_crud = VectorStoreCRUD(db_connection)
 research_crud = ResearchCRUD(db_connection)
 interview_crud = InterviewCRUD(db_connection)
 
@@ -100,41 +101,6 @@ async def detailed_health_check():
     
     return health_status
 
-@app.get("/debug/info")
-async def debug_info():
-    """デバッグ情報（センシティブ情報は除外）"""
-    import sys
-    import platform
-    
-    return {
-        "python_version": sys.version,
-        "platform": platform.platform(),
-        "fastapi_version": "0.104.1",
-        "environment_vars": {
-            "ALLOWED_ORIGINS": os.getenv("ALLOWED_ORIGINS", "not_set"),
-            "DB_HOST": os.getenv("DB_HOST", "not_set"),
-            "DB_NAME": os.getenv("DB_NAME", "not_set"),
-            "ENVIRONMENT": os.getenv("ENVIRONMENT", "not_set")
-        },
-        "current_working_directory": os.getcwd()
-    }
-
-@app.post("/api/signup/simple")
-async def simple_signup(request: Request):
-    """シンプルな新規登録テスト（フォールバック用）"""
-    try:
-        body = await request.json()
-        email = body.get("email")
-        password = body.get("password")
-        
-        if not email or not password:
-            return {"success": False, "message": "メールアドレスとパスワードが必要です"}
-        
-        logger.info(f"Simple signup attempt: {email}")
-        return {"success": True, "message": "シンプル登録テスト成功", "email": email}
-    except Exception as e:
-        logger.error(f"Simple signup error: {e}")
-        return {"success": False, "message": f"エラー: {str(e)}"}
 
 # ===== 認証関連エンドポイント =====
 
@@ -160,6 +126,506 @@ async def signup(user_data: UserCreate, request: Request):
     except Exception as e:
         logger.error(f"Signup error for {user_data.email}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"サーバーエラーが発生しました: {str(e)}")
+
+# ===== プロジェクト・キャンバス関連エンドポイント =====
+
+@app.get("/api/projects", response_model=List[ProjectListItem])
+async def get_user_projects(current_user_id: int = Depends(get_current_user)):
+    """ユーザーのプロジェクト一覧を取得"""
+    try:
+        projects = await project_crud.get_user_projects(current_user_id)
+        return [ProjectListItem(**project) for project in projects]
+    except Exception as e:
+        logger.error(f"プロジェクト一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="プロジェクト一覧の取得に失敗しました")
+
+@app.post("/api/canvas-autogenerate", response_model=CanvasComparisonResponse)
+async def auto_generate_canvas(request: CanvasAutoGenerateRequest):
+    """AIによるリーンキャンバス自動生成"""
+    try:
+        result = await canvas_service.auto_generate_canvas(
+            idea_description=request.idea_description,
+            target_audience=request.target_audience,
+            industry=request.industry
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return CanvasComparisonResponse(
+            current_canvas=LeanCanvasFields(),  # 空のキャンバス
+            proposed_canvas=LeanCanvasFields(**result["canvas_data"]),
+            differences={}  # 自動生成時は差分なし
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"キャンバス自動生成エラー: {e}")
+        raise HTTPException(status_code=500, detail="キャンバス自動生成に失敗しました")
+
+@app.post("/api/projects", response_model=ProjectResponse)
+async def create_project(project_data: ProjectCreate, current_user_id: int = Depends(get_current_user)):
+    """新規プロジェクト作成"""
+    try:
+        result = await canvas_service.create_project_with_canvas(
+            user_id=current_user_id,
+            project_name=project_data.project_name,
+            canvas_data=project_data.canvas_data.dict(),
+            update_comment=project_data.update_comment
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        # 作成されたプロジェクトの詳細を取得
+        project_detail = await project_crud.get_project_latest(result["project_id"], current_user_id)
+        
+        return ProjectResponse(
+            project_id=project_detail["project_id"],
+            project_name=project_detail["project_name"],
+            user_id=current_user_id,
+            created_at=project_detail["created_at"],
+            current_version=project_detail["current_version"],
+            canvas_data=LeanCanvasFields(**project_detail["canvas_data"]),
+            last_updated=project_detail["last_updated"],
+            update_category=project_detail["update_category"],
+            update_comment=project_detail["update_comment"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"プロジェクト作成エラー: {e}")
+        raise HTTPException(status_code=500, detail="プロジェクト作成に失敗しました")
+
+@app.get("/api/projects/{project_id}/latest", response_model=ProjectResponse)
+async def get_project_latest(project_id: int, current_user_id: int = Depends(get_current_user)):
+    """プロジェクトの最新バージョンを取得"""
+    try:
+        project = await project_crud.get_project_latest(project_id, current_user_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        
+        return ProjectResponse(
+            project_id=project["project_id"],
+            project_name=project["project_name"],
+            user_id=current_user_id,
+            created_at=project["created_at"],
+            current_version=project["current_version"],
+            canvas_data=LeanCanvasFields(**project["canvas_data"]),
+            last_updated=project["last_updated"],
+            update_category=project["update_category"],
+            update_comment=project["update_comment"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"プロジェクト取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="プロジェクトの取得に失敗しました")
+
+@app.post("/api/projects/{project_id}/latest", response_model=ProjectResponse)
+async def update_project_canvas(project_id: int, update_data: ProjectUpdate, 
+                              current_user_id: int = Depends(get_current_user)):
+    """プロジェクトキャンバスを更新"""
+    try:
+        result = await canvas_service.update_project_canvas(
+            project_id=project_id,
+            user_id=current_user_id,
+            canvas_data=update_data.canvas_data.dict(),
+            update_category=update_data.update_category.value,
+            update_comment=update_data.update_comment
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        # 更新されたプロジェクトの詳細を取得
+        project_detail = await project_crud.get_project_latest(project_id, current_user_id)
+        
+        return ProjectResponse(
+            project_id=project_detail["project_id"],
+            project_name=project_detail["project_name"],
+            user_id=current_user_id,
+            created_at=project_detail["created_at"],
+            current_version=project_detail["current_version"],
+            canvas_data=LeanCanvasFields(**project_detail["canvas_data"]),
+            last_updated=project_detail["last_updated"],
+            update_category=project_detail["update_category"],
+            update_comment=project_detail["update_comment"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"プロジェクト更新エラー: {e}")
+        raise HTTPException(status_code=500, detail="プロジェクト更新に失敗しました")
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: int, current_user_id: int = Depends(get_current_user)):
+    """プロジェクトを削除"""
+    try:
+        result = await project_crud.delete_project(project_id, current_user_id)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return {"message": result["message"]}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"プロジェクト削除エラー: {e}")
+        raise HTTPException(status_code=500, detail="プロジェクト削除に失敗しました")
+
+# ===== ドキュメント関連エンドポイント =====
+
+@app.get("/api/projects/{project_id}/documents", response_model=DocumentListResponse)
+async def get_project_documents(project_id: int, current_user_id: int = Depends(get_current_user)):
+    """プロジェクトのドキュメント一覧を取得"""
+    try:
+        documents = await document_crud.get_project_documents(project_id, current_user_id)
+        
+        total_size = sum(doc.get('file_size', 0) or 0 for doc in documents)
+        
+        return DocumentListResponse(
+            documents=[DocumentResponse(**doc) for doc in documents],
+            total_count=len(documents),
+            total_size=total_size
+        )
+        
+    except Exception as e:
+        logger.error(f"ドキュメント一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="ドキュメント一覧の取得に失敗しました")
+
+@app.post("/api/projects/{project_id}/documents", response_model=DocumentResponse)
+async def upload_document(project_id: int, source_type: SourceType, 
+                        file: UploadFile = File(...), 
+                        current_user_id: int = Depends(get_current_user)):
+    """ドキュメントをアップロード"""
+    try:
+        # ファイル保存
+        save_result = await file_service.save_file(file, project_id, current_user_id)
+        
+        if not save_result["success"]:
+            raise HTTPException(status_code=400, detail=save_result["message"])
+        
+        # データベースに登録
+        doc_result = await document_crud.create_document(
+            user_id=current_user_id,
+            project_id=project_id,
+            file_name=save_result["file_name"],
+            file_path=save_result["file_path"],
+            file_type=save_result["file_type"],
+            file_size=save_result["file_size"],
+            source_type=source_type.value
+        )
+        
+        if not doc_result["success"]:
+            # ファイル削除
+            await file_service.delete_file(save_result["file_path"])
+            raise HTTPException(status_code=400, detail=doc_result["message"])
+        
+        # テキスト抽出とRAG処理
+        try:
+            text_content = await file_service.extract_text_from_file(
+                save_result["file_path"], 
+                save_result["file_type"]
+            )
+            
+            if text_content:
+                # RAG処理を非同期で実行
+                asyncio.create_task(
+                    rag_service.process_document_for_rag(doc_result["document_id"], text_content)
+                )
+        except Exception as rag_error:
+            logger.warning(f"RAG処理でエラーが発生しましたが、ドキュメントは保存されました: {rag_error}")
+        
+        # ユーザー情報を取得
+        user = await auth_service.get_user_by_id(current_user_id)
+        
+        return DocumentResponse(
+            document_id=doc_result["document_id"],
+            file_name=save_result["file_name"],
+            file_type=save_result["file_type"],
+            file_size=save_result["file_size"],
+            source_type=source_type.value,
+            uploaded_at=datetime.now(),
+            user_email=user["email"] if user else "unknown"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ドキュメントアップロードエラー: {e}")
+        raise HTTPException(status_code=500, detail="ドキュメントのアップロードに失敗しました")
+
+@app.delete("/api/projects/{project_id}/documents/{document_id}")
+async def delete_document(project_id: int, document_id: int, 
+                        current_user_id: int = Depends(get_current_user)):
+    """ドキュメントを削除"""
+    try:
+        result = await document_crud.delete_document(document_id, current_user_id)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return {"message": result["message"]}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ドキュメント削除エラー: {e}")
+        raise HTTPException(status_code=500, detail="ドキュメント削除に失敗しました")
+
+# ===== リサーチ関連エンドポイント =====
+
+@app.post("/api/projects/{project_id}/research", response_model=CanvasComparisonResponse)
+async def research_canvas(project_id: int, request: ResearchRequest, 
+                        current_user_id: int = Depends(get_current_user)):
+    """リサーチ機能でキャンバスを改善"""
+    try:
+        result = await canvas_service.research_and_enhance_canvas(
+            project_id=project_id,
+            user_id=current_user_id,
+            research_focus=request.research_focus
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        # リサーチ結果を保存
+        current_project = await project_crud.get_project_latest(project_id, current_user_id)
+        edit_id = current_project["edit_id"] if current_project else None
+        
+        if edit_id:
+            await research_crud.create_research_result(
+                edit_id=edit_id,
+                user_id=current_user_id,
+                result_text=str(result["proposed_changes"]),
+                source_summary=result["source_summary"]
+            )
+        
+        # 差分計算（簡易版）
+        differences = {}
+        current_canvas = result["current_canvas"]
+        proposed_changes = result["proposed_changes"]
+        
+        return CanvasComparisonResponse(
+            current_canvas=LeanCanvasFields(**current_canvas),
+            proposed_canvas=LeanCanvasFields(**current_canvas),  # 改善提案を反映
+            differences=differences
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"リサーチエラー: {e}")
+        raise HTTPException(status_code=500, detail="リサーチに失敗しました")
+
+@app.delete("/api/projects/{project_id}/research/{research_id}")
+async def delete_research_result(project_id: int, research_id: int,
+                               current_user_id: int = Depends(get_current_user)):
+    """リサーチ結果を削除"""
+    try:
+        result = await research_crud.delete_research_result(research_id, current_user_id)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return {"message": result["message"]}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"リサーチ削除エラー: {e}")
+        raise HTTPException(status_code=500, detail="リサーチ結果の削除に失敗しました")
+
+# ===== インタビュー関連エンドポイント =====
+
+@app.post("/api/projects/{project_id}/interview-preparation", response_model=InterviewPreparationResponse)
+async def prepare_interview(project_id: int, request: InterviewPreparationRequest,
+                          current_user_id: int = Depends(get_current_user)):
+    """インタビュー準備機能"""
+    try:
+        # 現在のキャンバスを取得
+        current_project = await project_crud.get_project_latest(project_id, current_user_id)
+        if not current_project:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        
+        # インタビュー準備内容を生成（簡易版）
+        interview_questions = [
+            f"{request.interview_purpose}に関してお聞かせください。",
+            "どのような課題を感じていますか？",
+            "現在はどのように解決していますか？",
+            "理想的な解決方法があれば教えてください。"
+        ]
+        
+        target_personas = request.target_persona.split(",") if request.target_persona else ["一般ユーザー"]
+        
+        preparation_tips = [
+            "質問は具体的で答えやすい形にしましょう",
+            "相手の回答を深掘りする追加質問を準備しましょう",
+            "バイアスのかからない中立的な質問を心がけましょう"
+        ]
+        
+        focus_areas = request.focus_areas or ["課題の深掘り", "解決策の検証", "価値提案の確認"]
+        
+        return InterviewPreparationResponse(
+            interview_questions=interview_questions,
+            target_personas=target_personas,
+            preparation_tips=preparation_tips,
+            focus_areas=focus_areas
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"インタビュー準備エラー: {e}")
+        raise HTTPException(status_code=500, detail="インタビュー準備に失敗しました")
+
+@app.get("/api/projects/{project_id}/interview-notes", response_model=InterviewNoteListResponse)
+async def get_interview_notes(project_id: int, current_user_id: int = Depends(get_current_user)):
+    """インタビューメモ一覧を取得"""
+    try:
+        notes = await interview_crud.get_project_interview_notes(project_id, current_user_id)
+        
+        return InterviewNoteListResponse(
+            notes=[InterviewNoteResponse(**note) for note in notes],
+            total_count=len(notes)
+        )
+        
+    except Exception as e:
+        logger.error(f"インタビューメモ一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="インタビューメモの取得に失敗しました")
+
+@app.post("/api/projects/{project_id}/interview-notes", response_model=InterviewNoteResponse)
+async def create_interview_note(project_id: int, note_data: InterviewNoteCreate,
+                              current_user_id: int = Depends(get_current_user)):
+    """インタビューメモを作成"""
+    try:
+        result = await interview_crud.create_interview_note(
+            project_id=project_id,
+            user_id=current_user_id,
+            interviewee_name=note_data.interviewee_name,
+            interview_date=note_data.interview_date,
+            interview_type=note_data.interview_type.value,
+            interview_note=note_data.interview_note
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        # 作成されたメモの詳細を取得
+        note_detail = await interview_crud.get_interview_note_by_id(result["note_id"], current_user_id)
+        
+        return InterviewNoteResponse(**note_detail)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"インタビューメモ作成エラー: {e}")
+        raise HTTPException(status_code=500, detail="インタビューメモの作成に失敗しました")
+
+@app.delete("/api/projects/{project_id}/interview-notes/{note_id}")
+async def delete_interview_note(project_id: int, note_id: int,
+                              current_user_id: int = Depends(get_current_user)):
+    """インタビューメモを削除"""
+    try:
+        result = await interview_crud.delete_interview_note(note_id, current_user_id)
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return {"message": result["message"]}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"インタビューメモ削除エラー: {e}")
+        raise HTTPException(status_code=500, detail="インタビューメモの削除に失敗しました")
+
+@app.post("/api/projects/{project_id}/interview-to-canvas", response_model=CanvasComparisonResponse)
+async def reflect_interview_to_canvas(project_id: int, request: InterviewToCanvasRequest,
+                                    current_user_id: int = Depends(get_current_user)):
+    """インタビュー結果をキャンバスに反映"""
+    try:
+        # インタビューメモを取得
+        note_detail = await interview_crud.get_interview_note_by_id(request.note_id, current_user_id)
+        if not note_detail:
+            raise HTTPException(status_code=404, detail="インタビューメモが見つかりません")
+        
+        # キャンバス分析
+        result = await canvas_service.analyze_interview_for_canvas(
+            project_id=project_id,
+            user_id=current_user_id,
+            interview_text=note_detail["interview_note"]
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return CanvasComparisonResponse(
+            current_canvas=LeanCanvasFields(**result["current_canvas"]),
+            proposed_canvas=LeanCanvasFields(**result["current_canvas"]),  # 改善提案を反映
+            differences={}  # 差分計算は今後実装
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"インタビュー反映エラー: {e}")
+        raise HTTPException(status_code=500, detail="インタビューの反映に失敗しました")
+
+# ===== 履歴・ロールバック関連エンドポイント =====
+
+@app.get("/api/projects/{project_id}/edit-histories", response_model=List[EditHistoryItem])
+async def get_edit_history(project_id: int, current_user_id: int = Depends(get_current_user)):
+    """編集履歴を取得"""
+    try:
+        history = await project_crud.get_edit_history(project_id, current_user_id)
+        return [EditHistoryItem(**item) for item in history]
+        
+    except Exception as e:
+        logger.error(f"編集履歴取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="編集履歴の取得に失敗しました")
+
+@app.post("/api/projects/{project_id}/edit-histories/{edit_id}/rollback", response_model=ProjectResponse)
+async def rollback_project(project_id: int, edit_id: int, request: RollbackRequest,
+                         current_user_id: int = Depends(get_current_user)):
+    """プロジェクトをロールバック"""
+    try:
+        result = await project_crud.rollback_to_version(
+            project_id=project_id,
+            edit_id=edit_id,
+            user_id=current_user_id,
+            rollback_comment=request.rollback_comment
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        # ロールバック後のプロジェクト詳細を取得
+        project_detail = await project_crud.get_project_latest(project_id, current_user_id)
+        
+        return ProjectResponse(
+            project_id=project_detail["project_id"],
+            project_name=project_detail["project_name"],
+            user_id=current_user_id,
+            created_at=project_detail["created_at"],
+            current_version=project_detail["current_version"],
+            canvas_data=LeanCanvasFields(**project_detail["canvas_data"]),
+            last_updated=project_detail["last_updated"],
+            update_category=project_detail["update_category"],
+            update_comment=project_detail["update_comment"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ロールバックエラー: {e}")
+        raise HTTPException(status_code=500, detail="ロールバックに失敗しました")
 
 @app.post("/api/login", response_model=AuthResponse)
 async def login(user_data: UserLogin, response: Response, request: Request):
