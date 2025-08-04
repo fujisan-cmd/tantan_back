@@ -1,11 +1,12 @@
 # CRUD操作とモデル定義
-from sqlalchemy import Column, Integer, String, VARCHAR, DateTime, Boolean, Text, ForeignKey
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy import Column, Integer, Text, VARCHAR, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
-from connect_PostgreSQL import Base, SessionLocal, engine
+from connect_PostgreSQL import SessionLocal, engine
 from pydantic import BaseModel, EmailStr
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
+from enum import Enum
 import bcrypt
 import secrets
 import logging
@@ -14,44 +15,132 @@ import logging
 logger = logging.getLogger(__name__)
 
 # === SQLAlchemyモデル ===
+class UpdateCategory(Enum):
+    manual = 'manual'
+    consistency_check = 'consistency_check'
+    research = 'research'
+    interview = 'interview'
+    rollback = 'rollback'
+
+class Role(Enum):
+    admin = 'admin'
+    editor = 'editor'
+
+class InterviewType(Enum):
+    hypothesis_testing = 'hypothesis_testing'
+    deep_dive = 'deep_dive'
+
+class SourceType(Enum):
+    customer = 'customer'
+    company = 'company'
+    competitor = 'competitor'
+    macrotrend = 'macrotrend'
+
+class Base(DeclarativeBase):
+    pass
 
 class User(Base):
     """ユーザーテーブル"""
     __tablename__ = 'users'
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(VARCHAR(255), unique=True, nullable=False)
-    hashed_pw: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    email: Mapped[str] = mapped_column(VARCHAR(50), unique=True, nullable=False)
+    hashed_pw: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow(), nullable=True)
-    failed_login_counts: Mapped[int] = mapped_column(Integer, default=0)
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    failed_login_counts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     lock_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    company_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 class Session(Base):
     """セッションテーブル"""
     __tablename__ = 'sessions'
-    
-    session_id = Column(String(255), primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
+    session_id: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow() + timedelta(days=1), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
     user = relationship("User", backref="sessions")
 
 class Project(Base):
     """プロジェクトテーブル"""
     __tablename__ = 'projects'
-    
-    project_id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
-    project_name = Column(String(255), nullable=False)
-    description = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    is_active = Column(Boolean, default=True)
+
+    project_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    project_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
     
     user = relationship("User", backref="projects")
+
+class EditHistory(Base):
+    """編集履歴テーブル"""
+    __tablename__ = 'edit_history'
+    
+    edit_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+    update_category: Mapped[UpdateCategory] = mapped_column(Enum(UpdateCategory), nullable=False)
+    update_comment: Mapped[Optional[str]] = mapped_column(VARCHAR(255), nullable=True)
+
+    project = relationship("Project", backref="edit_history")
+
+class Detail(Base):
+    """詳細情報テーブル"""
+    __tablename__ = 'details'
+    
+    edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), primary_key=True)
+    field_name: Mapped[dict] = mapped_column(JSON, nullable=False)
+    field_content: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+class ProjectMember(Base):
+    """プロジェクトメンバー"""
+    __tablename__ = 'project_members'
+
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), primary_key=True) # 複合キー
+    role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
+    joined_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+class ResearchResult(Base):
+    """リサーチ結果"""
+    __tablename__ = 'research_results'
+
+    research_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+    researched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    result_text: Mapped[str] = mapped_column(VARCHAR(1000), nullable=False)
+
+class InterviewNote(Base):
+    """インタビュー結果"""
+    __tablename__ = 'interview_notes'
+
+    note_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), nullable=False)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+    interviewee_name: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+    interview_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    interview_type: Mapped[InterviewType] = mapped_column(Enum(InterviewType), nullable=False)
+    interview_note: Mapped[str] = mapped_column(Text, nullable=False)
+
+class Document(Base):
+    """投稿資料の情報"""
+    __tablename__ = 'documents'
+
+    document_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
+    file_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(VARCHAR(500), nullable=False)
+    file_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)  # 例: 'pdf', 'image', 'text'
+    source_type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
 # === Pydanticモデル ===
 
@@ -109,12 +198,12 @@ def create_user(email: str, password: str) -> Dict[str, Any]:
             return {"success": False, "message": "このメールアドレスは既に登録されています"}
         
         # パスワードハッシュ化
-        password_hash = hash_password(password)
+        hashed_pw = hash_password(password)
         
         # 新規ユーザー作成
         new_user = User(
             email=email,
-            hashed_password=password_hash
+            hashed_pw=hashed_pw
         )
         
         db.add(new_user)
