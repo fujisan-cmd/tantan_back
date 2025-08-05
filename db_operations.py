@@ -1,10 +1,11 @@
 # CRUD操作とモデル定義
-from sqlalchemy import Column, Integer, Text, VARCHAR, DateTime, Boolean, JSON, ForeignKey
+from sqlalchemy import Column, Integer, Text, VARCHAR, DateTime, Date, Boolean, JSON, ForeignKey
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
 from connect_PostgreSQL import SessionLocal, engine
 from pydantic import BaseModel, EmailStr
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Optional, List, Dict, Any
 from enum import Enum
 import bcrypt
@@ -84,10 +85,11 @@ class EditHistory(Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     last_updated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
-    update_category: Mapped[UpdateCategory] = mapped_column(Enum(UpdateCategory), nullable=False)
+    update_category: Mapped[UpdateCategory] = mapped_column(SQLEnum(UpdateCategory), nullable=False)
     update_comment: Mapped[Optional[str]] = mapped_column(VARCHAR(255), nullable=True)
 
     project = relationship("Project", backref="edit_history")
+    user = relationship("User", backref="edit_history")
 
 class Detail(Base):
     """詳細情報テーブル"""
@@ -97,14 +99,19 @@ class Detail(Base):
     field_name: Mapped[dict] = mapped_column(JSON, nullable=False)
     field_content: Mapped[dict] = mapped_column(JSON, nullable=False)
 
+    edit_history = relationship("EditHistory", backref="details")
+
 class ProjectMember(Base):
     """プロジェクトメンバー"""
     __tablename__ = 'project_members'
 
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), primary_key=True) # 複合キー
-    role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
+    role: Mapped[Role] = mapped_column(SQLEnum(Role), nullable=False)
     joined_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    project = relationship("Project", backref="project_members")
+    user = relationship("User", backref="project_memberships")
 
 class ResearchResult(Base):
     """リサーチ結果"""
@@ -116,6 +123,9 @@ class ResearchResult(Base):
     researched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     result_text: Mapped[str] = mapped_column(VARCHAR(1000), nullable=False)
 
+    edit_history = relationship("EditHistory", backref="research_results")
+    user = relationship("User", backref="research_results")
+
 class InterviewNote(Base):
     """インタビュー結果"""
     __tablename__ = 'interview_notes'
@@ -125,9 +135,13 @@ class InterviewNote(Base):
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
     interviewee_name: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
-    interview_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    interview_type: Mapped[InterviewType] = mapped_column(Enum(InterviewType), nullable=False)
+    interview_date: Mapped[date] = mapped_column(Date, nullable=False)
+    interview_type: Mapped[InterviewType] = mapped_column(SQLEnum(InterviewType), nullable=False)
     interview_note: Mapped[str] = mapped_column(Text, nullable=False)
+
+    edit_history = relationship("EditHistory", backref="interview_notes")
+    project = relationship("Project", backref="interview_notes")
+    user = relationship("User", backref="interview_notes")
 
 class Document(Base):
     """投稿資料の情報"""
@@ -139,8 +153,11 @@ class Document(Base):
     file_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
     file_path: Mapped[str] = mapped_column(VARCHAR(500), nullable=False)
     file_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)  # 例: 'pdf', 'image', 'text'
-    source_type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False)
+    source_type: Mapped[SourceType] = mapped_column(SQLEnum(SourceType), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    user = relationship("User", backref="documents")
+    project = relationship("Project", backref="documents")
 
 # === Pydanticモデル ===
 
