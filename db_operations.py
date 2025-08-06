@@ -1,6 +1,7 @@
 # CRUD操作とモデル定義
 from sqlalchemy import Column, Integer, Text, VARCHAR, DateTime, Date, Boolean, JSON, ForeignKey
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import select, insert, update, delete
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
 from connect_PostgreSQL import SessionLocal, engine
@@ -251,7 +252,7 @@ def authenticate_user(email: str, password: str) -> Dict[str, Any]:
             return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
         
         # パスワード検証
-        if not verify_password(password, user.hashed_password):
+        if not verify_password(password, user.hashed_pw):
             return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
         
         # 最終ログイン時刻更新
@@ -373,3 +374,40 @@ def create_tables():
     """テーブル作成"""
     Base.metadata.create_all(bind=engine)
     logger.info("テーブル作成完了")
+
+
+def get_latest_edit_id(project_id: int) -> Optional[int]:
+    """指定されたプロジェクトの最新のedit_idを取得"""
+    db = SessionLocal()
+    query = select(EditHistory).filter(
+        EditHistory.project_id == project_id
+            ).order_by(EditHistory.last_updated.desc()).limit(1)
+
+    try:
+        with db.begin():
+            result = db.execute(query).scalar_one_or_none()
+            if result:
+                return result.edit_id
+            return None
+        
+    except Exception as e:
+        logger.error(f"最新のedit_id取得エラー: {e}")
+        return None
+
+def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
+    """指定されたedit_idのキャンバス詳細を取得"""
+    db = SessionLocal()
+    query = select(Detail).filter(Detail.edit_id == edit_id)
+
+    try:
+        with db.begin():
+            result = db.execute(query).all()
+            if not result:
+                return None
+            
+            details = {detail.field_name: detail.field_content for detail in result}
+            return details
+        
+    except Exception as e:
+        logger.error(f"キャンバス詳細取得エラー: {e}")
+        return None

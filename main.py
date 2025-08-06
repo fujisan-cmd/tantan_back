@@ -11,7 +11,8 @@ from connect_PostgreSQL import test_database_connection
 from db_operations import (
     UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse,
     create_user, authenticate_user, create_session, validate_session, 
-    get_user_by_id, get_user_projects, create_tables
+    get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
+    get_canvas_details
 )
 
 # ログ設定
@@ -21,20 +22,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# FastAPIアプリケーション
 app = FastAPI(
     title="Idea Spark API",
     description="新規事業開発支援WebアプリケーションのAPI",
     version="1.0.0"
 )
 
-# CORS設定
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 logger.info(f"CORS allowed origins: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # 本番環境ではallowed_originsを使用すること
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -175,6 +174,13 @@ def get_projects(current_user_id: int = Depends(get_current_user)):
     """ユーザーのプロジェクト一覧取得"""
     projects = get_user_projects(current_user_id)
     return [ProjectResponse(**project) for project in projects]
+
+@app.get("projects/{project_id}/latest")
+def get_latest_canvas(project_id: int):
+    # response_modelと認証機能は後で実装する
+    edit_id = get_latest_edit_id(project_id)
+    details = get_canvas_details(edit_id)
+    return details
 
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")

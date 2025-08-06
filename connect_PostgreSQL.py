@@ -37,22 +37,22 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
     """データベースセッションの取得"""
-    db = SessionLocal()
+    session = SessionLocal()
     try:
-        yield db
+        yield session
     except Exception as e:
-        db.rollback()
+        session.rollback()
         logger.error(f"データベースエラー: {e}")
         raise
     finally:
-        db.close()
+        session.close()
 
 def test_database_connection():
     """データベース接続テスト"""
     try:
-        db = SessionLocal()
-        db.execute("SELECT 1")
-        db.close()
+        session = SessionLocal()
+        session.execute("SELECT 1")
+        session.close()
         logger.info("データベース接続成功")
         return {"status": "healthy", "message": "データベース接続成功"}
     except Exception as e:
