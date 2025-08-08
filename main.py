@@ -9,10 +9,11 @@ import os
 # ローカルモジュールのインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
-    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse,
+    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest,
     create_user, authenticate_user, create_session, validate_session, 
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
-    get_canvas_details
+    get_canvas_details,
+    insert_project, insert_edit_history, insert_canvas_details,
 )
 
 # ログ設定
@@ -181,6 +182,22 @@ def get_latest_canvas(project_id: int):
     edit_id = get_latest_edit_id(project_id)
     details = get_canvas_details(edit_id)
     return details
+
+@app.post("/projects")
+def register_project(request: ProjectCreateRequest):
+    # 'created_at'はDB側で自動設定するため、ここでは指定しない
+    value = {
+        'user_id': request.user_id,
+        'project_name': request.project_name,
+    }
+    project_id = insert_project(value)
+    print(f"新規プロジェクト登録: {project_id}")
+    # edit_historyテーブルにデータを挿入、versionは1に設定、edit_idを返却
+    edit_id = insert_edit_history(project_id, version=1, user_id=request.user_id, update_category="manual")
+    print(f"プロジェクトの編集履歴登録: {edit_id}")
+    # edit_idを使ってdetailテーブルにデータを挿入
+    result = insert_canvas_details(edit_id, request.field_name, request.field_content)
+    return {"project_id": project_id, "edit_id": edit_id, "result": result}
 
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")

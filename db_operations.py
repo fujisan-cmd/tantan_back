@@ -191,6 +191,12 @@ class AuthResponse(BaseModel):
     message: str
     user: Optional[UserResponse] = None
 
+class ProjectCreateRequest(BaseModel):
+    user_id: int
+    project_name: str
+    field_name: Dict[str, Any]
+    field_content: Dict[str, Any]
+
 # === CRUD関数 ===
 
 def hash_password(password: str) -> str:
@@ -411,3 +417,53 @@ def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"キャンバス詳細取得エラー: {e}")
         return None
+def insert_project(value):
+    """プロジェクトを挿入"""
+    db = SessionLocal()
+    query = insert(Project).values(value)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            project_id = result.inserted_primary_key[0]
+            logger.info(f"プロジェクト挿入成功: project_id={project_id}")
+            return project_id
+    except Exception as e:
+        db.rollback()
+        logger.error(f"プロジェクト挿入エラー: {e}")
+        return None
+    finally:
+        db.close()
+
+def insert_edit_history(project_id: int, version: int, user_id: int, update_category: UpdateCategory) -> int:
+    """プロジェクトの編集履歴を挿入"""
+    db = SessionLocal()
+    query = insert(EditHistory).values(project_id=project_id, version=version, user_id=user_id, update_category=update_category)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            edit_id = result.inserted_primary_key[0]
+            logger.info(f"編集履歴挿入成功: edit_id={edit_id}, project_id={project_id}")
+            return edit_id
+    except Exception as e:
+        db.rollback()
+        logger.error(f"編集履歴挿入エラー: {e}")
+        return 0
+    finally:
+        db.close()
+
+def insert_canvas_details(edit_id: int, field_name: Dict[str, Any], field_content: Dict[str, Any]) -> bool:
+    """キャンバスの詳細情報を挿入"""
+    db = SessionLocal()
+    query = insert(Detail).values(edit_id=edit_id, field_name=field_name, field_content=field_content)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            detail_id = result.inserted_primary_key[0]
+            logger.info(f"キャンバス詳細挿入成功: detail_id={detail_id}, edit_id={edit_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"キャンバス詳細挿入エラー: {e}")
+        return False
+    finally:
+        db.close()
