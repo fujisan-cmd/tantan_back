@@ -176,10 +176,11 @@ def get_projects(current_user_id: int = Depends(get_current_user)):
     projects = get_user_projects(current_user_id)
     return [ProjectResponse(**project) for project in projects]
 
-@app.get("projects/{project_id}/latest")
+@app.get("/projects/{project_id}/latest")
 def get_latest_canvas(project_id: int):
     # response_modelと認証機能は後で実装する
     edit_id = get_latest_edit_id(project_id)
+    print(f"最新の編集ID: {edit_id}")
     details = get_canvas_details(edit_id)
     return details
 

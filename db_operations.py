@@ -407,7 +407,7 @@ def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
 
     try:
         with db.begin():
-            result = db.execute(query).all()
+            result = db.execute(query).scalars().all()
             if not result:
                 return None
             
@@ -417,6 +417,7 @@ def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"キャンバス詳細取得エラー: {e}")
         return None
+    
 def insert_project(value):
     """プロジェクトを挿入"""
     db = SessionLocal()
