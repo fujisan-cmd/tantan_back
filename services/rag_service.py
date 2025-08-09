@@ -1,16 +1,15 @@
 # RAG（Retrieval-Augmented Generation）サービス
 import os
 import openai
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 import tiktoken
-import asyncio
 import logging
 from datetime import datetime
 
-from crud.documents import VectorStoreCRUD
-from database import db_connection
+# 現在のプロジェクト構造に合わせてインポート修正
+from connect_PostgreSQL import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +46,9 @@ class RAGService:
         
         # トークン計算用エンコーダー
         self.encoding = tiktoken.encoding_for_model("gpt-4")
-        
-        # データベースCRUD
-        self.vector_crud = VectorStoreCRUD(db_connection)
     
-    async def process_document_for_rag(self, document_id: int, text_content: str) -> Dict[str, Any]:
-        """ドキュメントをRAG用に処理（チャンク化＋ベクトル化）"""
+    async def process_text_for_rag(self, document_id: int, text_content: str) -> Dict[str, Any]:
+        """テキストをRAG用に処理（チャンク化＋ベクトル化）"""
         try:
             # テキストをチャンクに分割
             chunks = self.text_splitter.split_text(text_content)
@@ -89,7 +85,7 @@ class RAGService:
                 return {"success": False, "message": "ベクトル埋め込み生成に失敗しました"}
             
             # データベースに保存
-            result = await self.vector_crud.store_document_chunks(document_id, chunk_data)
+            result = await self._store_document_chunks(document_id, chunk_data)
             
             logger.info(f"ドキュメント処理完了: {document_id}, {len(chunk_data)}チャンク")
             return {
@@ -104,18 +100,17 @@ class RAGService:
             return {"success": False, "message": f"RAG処理に失敗しました: {str(e)}"}
     
     async def search_relevant_content(self, query: str, project_id: Optional[int] = None, 
-                                    limit: int = 10, source_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                                    limit: int = 10) -> List[Dict[str, Any]]:
         """関連コンテンツを検索"""
         try:
             # クエリのベクトル埋め込みを生成
             query_embedding = await self._get_embedding(query)
             
             # ベクトル検索実行
-            search_results = await self.vector_crud.vector_search(
+            search_results = await self._vector_search(
                 query_embedding=query_embedding,
                 limit=limit,
-                project_id=project_id,
-                source_types=source_types
+                project_id=project_id
             )
             
             logger.info(f"ベクトル検索完了: クエリ='{query}', 結果数={len(search_results)}")
@@ -133,8 +128,11 @@ class RAGService:
             system_prompt = self._build_canvas_generation_prompt()
             user_prompt = self._build_user_canvas_prompt(idea_description, target_audience, industry)
             
-            # OpenAI APIを呼び出し
-            response = await openai.ChatCompletion.acreate(
+            # OpenAI APIを呼び出し（新しいAPI形式）
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=self.api_key)
+            
+            response = await client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -160,89 +158,6 @@ class RAGService:
             logger.error(f"キャンバス自動生成エラー: {e}")
             return {"success": False, "message": f"キャンバス生成に失敗しました: {str(e)}"}
     
-    async def research_and_enhance_canvas(self, current_canvas: Dict[str, Any], project_id: int,
-                                        research_focus: Optional[str] = None) -> Dict[str, Any]:
-        """既存のキャンバスをリサーチして改善提案を生成"""
-        try:
-            # 現在のキャンバス内容から検索クエリを生成
-            search_queries = self._generate_search_queries(current_canvas, research_focus)
-            
-            # 関連コンテンツを検索
-            all_relevant_content = []
-            for query in search_queries:
-                results = await self.search_relevant_content(query, project_id, limit=5)
-                all_relevant_content.extend(results)
-            
-            if not all_relevant_content:
-                return {
-                    "success": False,
-                    "message": "関連する情報が見つかりませんでした"
-                }
-            
-            # 検索結果を要約
-            content_summary = self._summarize_search_results(all_relevant_content)
-            
-            # 改善提案を生成
-            enhancement_prompt = self._build_enhancement_prompt(current_canvas, content_summary, research_focus)
-            
-            response = await openai.ChatCompletion.acreate(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "あなたは新規事業開発の専門家です。提供された情報を基にリーンキャンバスの改善提案を行ってください。"},
-                    {"role": "user", "content": enhancement_prompt}
-                ],
-                temperature=0.6,
-                max_tokens=1500
-            )
-            
-            enhancement_content = response.choices[0].message.content
-            proposed_changes = self._parse_enhancement_response(enhancement_content)
-            
-            logger.info(f"キャンバス改善提案完了: プロジェクト={project_id}")
-            return {
-                "success": True,
-                "proposed_changes": proposed_changes,
-                "source_summary": content_summary,
-                "research_queries": search_queries,
-                "raw_response": enhancement_content,
-                "message": "リサーチに基づく改善提案が生成されました"
-            }
-            
-        except Exception as e:
-            logger.error(f"キャンバス改善提案エラー: {e}")
-            return {"success": False, "message": f"改善提案生成に失敗しました: {str(e)}"}
-    
-    async def analyze_interview_insights(self, interview_text: str, current_canvas: Dict[str, Any]) -> Dict[str, Any]:
-        """インタビュー内容を分析してキャンバスへの反映提案を生成"""
-        try:
-            # インタビュー分析プロンプト構築
-            analysis_prompt = self._build_interview_analysis_prompt(interview_text, current_canvas)
-            
-            response = await openai.ChatCompletion.acreate(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "あなたは顧客インタビューの分析専門家です。インタビュー内容から有用なインサイトを抽出し、リーンキャンバスへの反映提案を行ってください。"},
-                    {"role": "user", "content": analysis_prompt}
-                ],
-                temperature=0.5,
-                max_tokens=1200
-            )
-            
-            analysis_content = response.choices[0].message.content
-            insights_data = self._parse_interview_analysis(analysis_content)
-            
-            logger.info(f"インタビュー分析完了")
-            return {
-                "success": True,
-                "insights": insights_data,
-                "raw_analysis": analysis_content,
-                "message": "インタビュー分析が完了しました"
-            }
-            
-        except Exception as e:
-            logger.error(f"インタビュー分析エラー: {e}")
-            return {"success": False, "message": f"インタビュー分析に失敗しました: {str(e)}"}
-    
     async def _get_embedding(self, text: str) -> List[float]:
         """テキストのベクトル埋め込みを取得"""
         try:
@@ -252,6 +167,98 @@ class RAGService:
         except Exception as e:
             logger.error(f"埋め込み生成エラー: {e}")
             raise
+    
+    async def _store_document_chunks(self, document_id: int, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """ドキュメントのチャンクとベクトルを保存"""
+        db = SessionLocal()
+        try:
+            # 既存のチャンクを削除
+            db.execute(
+                "DELETE FROM document_chunks WHERE document_id = %s",
+                (document_id,)
+            )
+            
+            # 新しいチャンクを挿入
+            for chunk in chunks:
+                db.execute(
+                    """
+                    INSERT INTO document_chunks (document_id, chunk_text, chunk_order, embedding, metadata)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        document_id,
+                        chunk['text'],
+                        chunk['order'],
+                        chunk['embedding'],  # pgvectorの vector型
+                        chunk.get('metadata', {})
+                    )
+                )
+            
+            db.commit()
+            logger.info(f"チャンク保存成功: ドキュメント {document_id}, {len(chunks)}チャンク")
+            return {
+                "success": True,
+                "chunks_stored": len(chunks),
+                "message": "チャンクとベクトルが保存されました"
+            }
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"チャンク保存エラー: {e}")
+            return {"success": False, "message": f"チャンク保存に失敗しました: {str(e)}"}
+        finally:
+            db.close()
+    
+    async def _vector_search(self, query_embedding: List[float], limit: int = 10, 
+                          project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """ベクトル類似検索を実行"""
+        db = SessionLocal()
+        try:
+            # ベースクエリ
+            base_query = """
+                SELECT dc.chunk_id, dc.document_id, dc.chunk_text, dc.metadata,
+                       d.file_name, d.source_type, d.project_id,
+                       (dc.embedding <-> %s::vector) as distance
+                FROM document_chunks dc
+                JOIN documents d ON dc.document_id = d.document_id
+            """
+            
+            params = [query_embedding]
+            
+            # プロジェクト絞り込み
+            if project_id is not None:
+                base_query += " WHERE d.project_id = %s"
+                params.append(project_id)
+            
+            # 類似度順でソート・制限
+            base_query += " ORDER BY distance ASC LIMIT %s"
+            params.append(limit)
+            
+            cursor = db.execute(base_query, params)
+            results = cursor.fetchall()
+            
+            # 結果を整形
+            search_results = []
+            for result in results:
+                search_results.append({
+                    "chunk_id": result[0],
+                    "document_id": result[1],
+                    "document_name": result[4],
+                    "chunk_text": result[2],
+                    "similarity_score": 1.0 - result[7],  # 距離を類似度スコアに変換
+                    "source_type": result[5],
+                    "project_id": result[6],
+                    "metadata": result[3] if result[3] else {}
+                })
+            
+            logger.info(f"ベクトル検索実行: {len(search_results)}件の結果")
+            return search_results
+            
+        except Exception as e:
+            logger.error(f"ベクトル検索エラー: {e}")
+            return []
+        finally:
+            db.close()
     
     def _build_canvas_generation_prompt(self) -> str:
         """キャンバス生成用のシステムプロンプト"""
@@ -335,69 +342,3 @@ class RAGService:
             canvas_data[current_field] = '\n'.join(current_content).strip()
         
         return canvas_data
-    
-    def _generate_search_queries(self, canvas: Dict[str, Any], focus: Optional[str]) -> List[str]:
-        """キャンバス内容から検索クエリを生成"""
-        queries = []
-        
-        if focus:
-            queries.append(focus)
-        
-        # 主要フィールドからクエリを生成
-        if canvas.get('problem'):
-            queries.append(canvas['problem'][:100])
-        if canvas.get('customer_segments'):
-            queries.append(canvas['customer_segments'][:100])
-        if canvas.get('solution'):
-            queries.append(canvas['solution'][:100])
-        
-        return queries[:5]  # 最大5つのクエリ
-    
-    def _summarize_search_results(self, results: List[Dict[str, Any]]) -> str:
-        """検索結果を要約"""
-        if not results:
-            return "関連情報が見つかりませんでした。"
-        
-        summary_parts = []
-        for result in results[:10]:  # 上位10件
-            summary_parts.append(f"出典: {result['document_name']}")
-            summary_parts.append(f"内容: {result['chunk_text'][:200]}...")
-            summary_parts.append("---")
-        
-        return '\n'.join(summary_parts)
-    
-    def _build_enhancement_prompt(self, canvas: Dict[str, Any], content_summary: str, focus: Optional[str]) -> str:
-        """改善提案プロンプトを構築"""
-        prompt = "現在のリーンキャンバス:\n"
-        for field, value in canvas.items():
-            if value:
-                prompt += f"{field}: {value}\n"
-        
-        prompt += f"\n関連情報:\n{content_summary}\n"
-        
-        if focus:
-            prompt += f"\n特に注目すべき点: {focus}\n"
-        
-        prompt += "\n上記の関連情報を基に、現在のキャンバスの改善提案を行ってください。"
-        return prompt
-    
-    def _parse_enhancement_response(self, response: str) -> Dict[str, str]:
-        """改善提案レスポンスを解析"""
-        # 簡単な解析実装（実際にはより詳細な解析が必要）
-        return {"enhancement_summary": response}
-    
-    def _build_interview_analysis_prompt(self, interview: str, canvas: Dict[str, Any]) -> str:
-        """インタビュー分析プロンプトを構築"""
-        prompt = f"インタビュー内容:\n{interview}\n\n"
-        prompt += "現在のリーンキャンバス:\n"
-        for field, value in canvas.items():
-            if value:
-                prompt += f"{field}: {value}\n"
-        
-        prompt += "\nインタビュー内容から有用なインサイトを抽出し、キャンバスへの反映提案を行ってください。"
-        return prompt
-    
-    def _parse_interview_analysis(self, response: str) -> Dict[str, Any]:
-        """インタビュー分析レスポンスを解析"""
-        # 簡単な解析実装（実際にはより詳細な解析が必要）
-        return {"analysis_summary": response}

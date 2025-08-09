@@ -183,7 +183,6 @@ class ProjectResponse(BaseModel):
     """プロジェクトレスポンスモデル"""
     project_id: int
     project_name: str
-    description: Optional[str]
     created_at: datetime
 
 class AuthResponse(BaseModel):
@@ -355,15 +354,13 @@ def get_user_projects(user_id: int) -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:
         projects = db.query(Project).filter(
-            Project.user_id == user_id,
-            Project.is_active == True
+            Project.user_id == user_id
         ).all()
         
         return [
             {
                 "project_id": project.project_id,
                 "project_name": project.project_name,
-                "description": project.description,
                 "created_at": project.created_at
             }
             for project in projects
@@ -468,3 +465,183 @@ def insert_canvas_details(edit_id: int, field_name: Dict[str, Any], field_conten
         return False
     finally:
         db.close()
+
+# === RAG機能用追加 START ===
+# 注意: データベーススキーマ適用前のため一時的にコメントアウト
+
+# class Document(Base):
+#     """ドキュメントテーブル（RAG対応）"""
+#     __tablename__ = 'documents'
+# 
+#     document_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+#     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+#     project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
+#     file_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+#     file_path: Mapped[Optional[str]] = mapped_column(VARCHAR(500), nullable=True)  # RAG: NULL許可
+#     file_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+#     file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+#     source_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+#     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+#     processing_status: Mapped[str] = mapped_column(VARCHAR(20), default='pending', nullable=False)
+# 
+#     user = relationship("User", backref="documents")
+#     project = relationship("Project", backref="documents")
+
+# class DocumentChunk(Base):
+#     """ドキュメントチャンクテーブル（RAG用ベクトル保存）"""
+#     __tablename__ = 'document_chunks'
+# 
+#     chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+#     document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id'), nullable=False)
+#     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+#     chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
+#     embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
+#     metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+# 
+#     document = relationship("Document", backref="chunks")
+
+# RAG機能用Pydanticモデル
+class DocumentUploadResponse(BaseModel):
+    document_id: int
+    file_name: str
+    file_type: str
+    file_size: int
+    processing_status: str
+    chunks_count: Optional[int] = 0
+    created_at: datetime
+
+class TextDocumentResponse(BaseModel):
+    document_id: int
+    file_name: str
+    file_type: str
+    source_type: str
+    text_preview: str
+    processing_status: str
+    chunks_count: int
+    uploaded_at: datetime
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 10
+
+class SearchResult(BaseModel):
+    chunk_text: str
+    similarity_score: float
+    document_name: str
+    source_type: str
+
+class CanvasGenerationRequest(BaseModel):
+    idea_description: str
+    target_audience: Optional[str] = None
+    industry: Optional[str] = None
+
+# RAG機能用CRUD関数（データベーススキーマ適用前のため一時的にコメントアウト）
+# def create_document_record(user_id: int, project_id: int, file_name: str, 
+#                           file_type: str, file_size: int, source_type: str) -> Optional[int]:
+#     """ドキュメント記録を作成"""
+#     db = SessionLocal()
+#     try:
+#         new_doc = Document(
+#             user_id=user_id,
+#             project_id=project_id,
+#             file_name=file_name,
+#             file_type=file_type,
+#             file_size=file_size,
+#             source_type=source_type,
+#             processing_status='pending'
+#         )
+#         db.add(new_doc)
+#         db.commit()
+#         db.refresh(new_doc)
+#         
+#         logger.info(f"ドキュメント記録作成成功: {file_name} (ID: {new_doc.document_id})")
+#         return new_doc.document_id
+#         
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"ドキュメント記録作成エラー: {e}")
+#         return None
+#     finally:
+#         db.close()
+
+# def update_document_processing_status(document_id: int, status: str) -> bool:
+#     """ドキュメント処理状況を更新"""
+#     db = SessionLocal()
+#     try:
+#         doc = db.query(Document).filter(Document.document_id == document_id).first()
+#         if doc:
+#             doc.processing_status = status
+#             if status == 'completed':
+#                 doc.file_path = None  # RAG処理完了後はfile_pathをクリア
+#             db.commit()
+#             logger.info(f"ドキュメント処理状況更新: {document_id} -> {status}")
+#             return True
+#         return False
+#         
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"ドキュメント処理状況更新エラー: {e}")
+#         return False
+#     finally:
+#         db.close()
+
+# def get_project_documents(project_id: int, user_id: int) -> List[Dict[str, Any]]:
+#     """プロジェクトのドキュメント一覧取得"""
+#     db = SessionLocal()
+#     try:
+#         docs = db.query(Document).filter(
+#             Document.project_id == project_id,
+#             Document.user_id == user_id
+#         ).order_by(Document.uploaded_at.desc()).all()
+#         
+#         result = []
+#         for doc in docs:
+#             # チャンク数を取得
+#             chunk_count = db.query(DocumentChunk).filter(
+#                 DocumentChunk.document_id == doc.document_id
+#             ).count()
+#             
+#             result.append({
+#                 "document_id": doc.document_id,
+#                 "file_name": doc.file_name,
+#                 "file_type": doc.file_type,
+#                 "file_size": doc.file_size,
+#                 "source_type": doc.source_type,
+#                 "processing_status": doc.processing_status,
+#                 "chunks_count": chunk_count,
+#                 "uploaded_at": doc.uploaded_at
+#             })
+#         
+#         return result
+#         
+#     except Exception as e:
+#         logger.error(f"プロジェクトドキュメント取得エラー: {e}")
+#         return []
+#     finally:
+#         db.close()
+
+# def delete_document_record(document_id: int, user_id: int) -> bool:
+#     """ドキュメント記録を削除"""
+#     db = SessionLocal()
+#     try:
+#         doc = db.query(Document).filter(
+#             Document.document_id == document_id,
+#             Document.user_id == user_id
+#         ).first()
+#         
+#         if doc:
+#             # チャンクも一緒に削除される（CASCADE）
+#             db.delete(doc)
+#             db.commit()
+#             logger.info(f"ドキュメント削除成功: {document_id}")
+#             return True
+#         return False
+#         
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"ドキュメント削除エラー: {e}")
+#         return False
+#     finally:
+#         db.close()
+
+# === RAG機能用追加 END ===
