@@ -289,11 +289,13 @@ def create_session(user_id: int) -> Optional[str]:
         
         # セッション作成（24時間有効）
         from datetime import timedelta
-        expires_at = datetime.utcnow() + timedelta(hours=24)
+        current_time = datetime.utcnow()
+        expires_at = current_time + timedelta(hours=24)
         
         new_session = Session(
             session_id=session_id,
             user_id=user_id,
+            created_at=current_time,
             expires_at=expires_at
         )
         
