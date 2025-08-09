@@ -161,7 +161,7 @@ def logout(response: Response):
     response.delete_cookie("session_id")
     return {"message": "ログアウトしました"}
 
-@app.get("/api/me", response_model=UserResponse)
+@app.get("/api/auth/me", response_model=UserResponse)
 def get_current_user_info(current_user_id: int = Depends(get_current_user)):
     """現在のユーザー情報取得"""
     user_info = get_user_by_id(current_user_id)
