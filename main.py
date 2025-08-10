@@ -197,7 +197,7 @@ def register_project(request: ProjectCreateRequest):
     edit_id = insert_edit_history(project_id, version=1, user_id=request.user_id, update_category="manual")
     print(f"プロジェクトの編集履歴登録: {edit_id}")
     # edit_idを使ってdetailテーブルにデータを挿入
-    result = insert_canvas_details(edit_id, request.field_name, request.field_content)
+    result = insert_canvas_details(edit_id, request.field)
     return {"project_id": project_id, "edit_id": edit_id, "result": result}
 
 # アプリケーション起動時にテーブル作成
