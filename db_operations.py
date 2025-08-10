@@ -97,8 +97,7 @@ class Detail(Base):
     __tablename__ = 'details'
     
     edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), primary_key=True)
-    field_name: Mapped[dict] = mapped_column(JSON, nullable=False)
-    field_content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    field: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     edit_history = relationship("EditHistory", backref="details")
 
@@ -193,8 +192,7 @@ class AuthResponse(BaseModel):
 class ProjectCreateRequest(BaseModel):
     user_id: int
     project_name: str
-    field_name: Dict[str, Any]
-    field_content: Dict[str, Any]
+    field: Dict[str, Any]
 
 # === CRUD関数 ===
 
@@ -408,7 +406,7 @@ def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
             if not result:
                 return None
             
-            details = {detail.field_name: detail.field_content for detail in result}
+            details = {detail.edit_id: detail.field for detail in result}
             return details
         
     except Exception as e:
@@ -449,10 +447,10 @@ def insert_edit_history(project_id: int, version: int, user_id: int, update_cate
     finally:
         db.close()
 
-def insert_canvas_details(edit_id: int, field_name: Dict[str, Any], field_content: Dict[str, Any]) -> bool:
+def insert_canvas_details(edit_id: int, field: Dict[str, Any]) -> bool:
     """キャンバスの詳細情報を挿入"""
     db = SessionLocal()
-    query = insert(Detail).values(edit_id=edit_id, field_name=field_name, field_content=field_content)
+    query = insert(Detail).values(edit_id=edit_id, field=field)
     try:
         with db.begin():
             result = db.execute(query)
