@@ -1,33 +1,18 @@
 # Idea Spark - 新規事業開発支援WebアプリケーションのメインAPI
-from fastapi import FastAPI, HTTPException, Depends, Cookie, Response, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, Cookie, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import Optional, List
 import logging
 import os
-from dotenv import load_dotenv
-from openai import OpenAI
-import json
-
-load_dotenv()
-api_key = os.getenv("API_KEY")
-client = OpenAI(api_key=api_key)
 
 # ローカルモジュールのインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
-    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI,
+    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse,
     create_user, authenticate_user, create_session, validate_session, 
-    get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
-    get_canvas_details,
-    insert_project, insert_edit_history, insert_canvas_details,
-    # RAG機能用追加
-    DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest
+    get_user_by_id, get_user_projects, create_tables ,get_project_documents
 )
-
-# RAG機能用サービス
-from services.file_service import FileService
-from services.rag_service import RAGService
 
 # ログ設定
 logging.basicConfig(
@@ -36,26 +21,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# FastAPIアプリケーション
 app = FastAPI(
     title="Idea Spark API",
     description="新規事業開発支援WebアプリケーションのAPI",
     version="1.0.0"
 )
 
+# CORS設定
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 logger.info(f"CORS allowed origins: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # 本番環境ではallowed_originsを使用すること
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# RAG機能用サービスインスタンス
-file_service = FileService()
-rag_service = RAGService()
 
 # 依存関数：現在のユーザーを取得
 def get_current_user(session_id: str = Cookie(None)) -> int:
@@ -178,7 +161,7 @@ def logout(response: Response):
     response.delete_cookie("session_id")
     return {"message": "ログアウトしました"}
 
-@app.get("/api/auth/me", response_model=UserResponse)
+@app.get("/api/me", response_model=UserResponse)
 def get_current_user_info(current_user_id: int = Depends(get_current_user)):
     """現在のユーザー情報取得"""
     user_info = get_user_by_id(current_user_id)
@@ -193,190 +176,6 @@ def get_projects(current_user_id: int = Depends(get_current_user)):
     projects = get_user_projects(current_user_id)
     return [ProjectResponse(**project) for project in projects]
 
-@app.get("/projects/{project_id}/latest")
-def get_latest_canvas(project_id: int):
-    # response_modelと認証機能は後で実装する
-    edit_id = get_latest_edit_id(project_id)
-    print(f"最新の編集ID: {edit_id}")
-    details = get_canvas_details(edit_id)
-    return details
-
-@app.post("/projects")
-def register_project(request: ProjectCreateRequest):
-    # 'created_at'はDB側で自動設定するため、ここでは指定しない
-    value = {
-        'user_id': request.user_id,
-        'project_name': request.project_name,
-    }
-    project_id = insert_project(value)
-    print(f"新規プロジェクト登録: {project_id}")
-    # edit_historyテーブルにデータを挿入、versionは1に設定、edit_idを返却
-    edit_id = insert_edit_history(project_id, version=1, user_id=request.user_id, update_category="manual")
-    print(f"プロジェクトの編集履歴登録: {edit_id}")
-    # edit_idを使ってdetailテーブルにデータを挿入
-    result = insert_canvas_details(edit_id, request.field)
-    return {"project_id": project_id, "edit_id": edit_id, "result": result}
-
-@app.post("/canvas-autogenerate")
-def auto_generate_canvas(request: ProjectWithAI):
-    request = '今から新規事業開発のリーンキャンバスを作成します。' \
-            'アイデアの概要を以下に提示しますので、リーンキャンバスの各項目を日本語で作成してください。'\
-            '解答には余計な文章を挿入せず、必ず以下の書式を埋める形で回答してください。idea_nameなどのkeyは日本語にせずそのまま返してください：{"idea_name": "", "Problem": "","Customer_Segments": "","Unique_Value_Proposition": "","Solution": "","Channels": "","Revenue_Streams": "","Cost_Structure": "","Key_Metrics": "","Unfair_Advantage": "","Early_Adopters": "","Existing_Alternatives": ""} ## アイデア概要' \
-            + request.idea_draft
-    response = client.chat.completions.create(
-        model='gpt-4o', 
-        messages=[
-            {'role': 'user', "content": request},
-        ],
-    )
-    output_content = response.choices[0].message.content.strip()
-    result = json.loads(output_content)
-    return result
-
-# === RAG機能用エンドポイント ===
-
-@app.post("/api/projects/{project_id}/upload-and-process")
-async def upload_and_process_file(
-    project_id: int,
-    file: UploadFile = File(...),
-    source_type: str = Form(...),
-    current_user_id: int = Depends(get_current_user)
-):
-    """ファイルアップロード→テキスト抽出→RAG処理→元ファイル削除"""
-    try:
-        logger.info(f"ファイル処理開始: {file.filename}, プロジェクト: {project_id}")
-        
-        # 1. ファイル処理とテキスト抽出（一時ファイル使用）
-        extraction_result = await file_service.process_uploaded_file_and_extract_text(file)
-        
-        if not extraction_result["success"]:
-            raise HTTPException(status_code=400, detail=extraction_result["message"])
-        
-        # 2. ドキュメント記録をDBに作成（一時的にコメントアウトされた関数を使用予定）
-        # document_id = create_document_record(
-        #     user_id=current_user_id,
-        #     project_id=project_id,
-        #     file_name=extraction_result["file_info"]["original_filename"],
-        #     file_type=extraction_result["file_info"]["file_type"],
-        #     file_size=extraction_result["file_info"]["file_size"],
-        #     source_type=source_type
-        # )
-        
-        # 3. RAG処理（テキスト分割・ベクトル化・保存）
-        # rag_result = await rag_service.process_text_for_rag(
-        #     document_id=document_id,
-        #     text_content=extraction_result["extracted_text"]
-        # )
-        
-        # 4. 処理状況更新
-        # update_document_processing_status(document_id, 'completed')
-        
-        # 一時的なレスポンス（データベーススキーマ適用前）
-        logger.info(f"ファイル処理完了: {file.filename}")
-        return {
-            "message": "ファイル処理が完了しました",
-            "file_info": extraction_result["file_info"],
-            "text_length": len(extraction_result["extracted_text"]),
-            "text_preview": extraction_result["extracted_text"][:200] + "..."
-        }
-        
-    except Exception as e:
-        logger.error(f"ファイル処理エラー: {e}")
-        raise HTTPException(status_code=500, detail=f"ファイル処理に失敗しました: {str(e)}")
-
-@app.get("/api/projects/{project_id}/documents")
-async def get_project_documents_list(
-    project_id: int,
-    current_user_id: int = Depends(get_current_user)
-):
-    """プロジェクトのアップロード済み文書一覧取得"""
-    try:
-        # documents = get_project_documents(project_id, current_user_id)
-        # 一時的なレスポンス（データベーススキーマ適用前）
-        return {
-            "message": "文書一覧機能は準備中です",
-            "documents": []
-        }
-        
-    except Exception as e:
-        logger.error(f"文書一覧取得エラー: {e}")
-        raise HTTPException(status_code=500, detail="文書一覧の取得に失敗しました")
-
-@app.post("/api/projects/{project_id}/search")
-async def search_relevant_content(
-    project_id: int,
-    search_request: SearchRequest,
-    current_user_id: int = Depends(get_current_user)
-):
-    """ベクトル検索でプロジェクト内の関連コンテンツを検索"""
-    try:
-        logger.info(f"ベクトル検索開始: プロジェクト{project_id}, クエリ: {search_request.query}")
-        
-        # RAG検索実行
-        search_results = await rag_service.search_relevant_content(
-            query=search_request.query,
-            project_id=project_id,
-            limit=search_request.limit
-        )
-        
-        return {
-            "query": search_request.query,
-            "results_count": len(search_results),
-            "results": search_results
-        }
-        
-    except Exception as e:
-        logger.error(f"ベクトル検索エラー: {e}")
-        raise HTTPException(status_code=500, detail="検索に失敗しました")
-
-@app.post("/api/canvas-generate-from-text")
-async def generate_canvas_from_idea(
-    canvas_request: CanvasGenerationRequest,
-    current_user_id: int = Depends(get_current_user)
-):
-    """アイデアテキストからリーンキャンバスを自動生成"""
-    try:
-        logger.info(f"キャンバス自動生成開始: {canvas_request.idea_description[:50]}...")
-        
-        # AIによるキャンバス生成
-        generation_result = await rag_service.generate_canvas_from_idea(
-            idea_description=canvas_request.idea_description,
-            target_audience=canvas_request.target_audience,
-            industry=canvas_request.industry
-        )
-        
-        if not generation_result["success"]:
-            raise HTTPException(status_code=500, detail=generation_result["message"])
-        
-        return {
-            "message": generation_result["message"],
-            "canvas_data": generation_result["canvas_data"],
-            "generated_by": "AI (OpenAI GPT-4o)"
-        }
-        
-    except Exception as e:
-        logger.error(f"キャンバス自動生成エラー: {e}")
-        raise HTTPException(status_code=500, detail="キャンバス生成に失敗しました")
-
-@app.delete("/api/projects/{project_id}/documents/{document_id}")
-async def delete_document(
-    project_id: int,
-    document_id: int,
-    current_user_id: int = Depends(get_current_user)
-):
-    """文書を削除（ベクトルデータも含む）"""
-    try:
-        # success = delete_document_record(document_id, current_user_id)
-        # 一時的なレスポンス（データベーススキーマ適用前）
-        return {
-            "message": "文書削除機能は準備中です",
-            "document_id": document_id
-        }
-        
-    except Exception as e:
-        logger.error(f"文書削除エラー: {e}")
-        raise HTTPException(status_code=500, detail="文書削除に失敗しました")
-
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")
 def startup_event():
@@ -388,3 +187,9 @@ def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+@app.get("/projects/{project_id}/documents")
+def get_documents(project_id: int):
+    documents = get_project_documents(project_id)
+    print(f"プロジェクト{project_id}の文書一覧: {len(documents)}件")
+    return documents

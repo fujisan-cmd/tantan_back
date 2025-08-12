@@ -318,6 +318,32 @@ def create_session(user_id: int) -> Optional[str]:
     finally:
         db.close()
 
+        
+
+def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
+    """指定されたプロジェクトの文書一覧取得"""
+    db = SessionLocal()
+    try:
+        documents = db.query(Document).filter(
+            Document.project_id == project_id
+        ).order_by(Document.uploaded_at.desc()).all()
+
+        return [
+            {
+                "document_id": doc.document_id,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "source_type": doc.source_type.value,  # Enumなら .value
+                "uploaded_at": doc.uploaded_at,
+            }
+            for doc in documents
+        ]
+    except Exception as e:
+        logger.error(f"プロジェクト文書取得エラー: {e}")
+        return []
+    finally:
+        db.close()
+
 def validate_session(session_id: str) -> Optional[int]:
     """セッション検証"""
     db = SessionLocal()
