@@ -11,16 +11,28 @@ from connect_PostgreSQL import test_database_connection
 from db_operations import (
     UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest,
     create_user, authenticate_user, create_session, validate_session, 
-    get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
+    get_user_by_id, get_user_projects, get_project_by_id, create_tables, get_latest_edit_id,
     get_canvas_details,
     insert_project, insert_edit_history, insert_canvas_details,
     # RAG機能用追加
-    DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest
+    DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
+    # 整合性確認機能用追加
+    ConsistencyCheckRequest, ConsistencyCheckResponse,
+    # AI回答自動生成機能用追加
+    AutoAnswerGenerationRequest, AutoAnswerGenerationResponse,
+    # リーンキャンバス更新案生成機能用追加
+    CanvasUpdateRequest, CanvasUpdateResponse
 )
 
 # RAG機能用サービス
 from services.file_service import FileService
 from services.rag_service import RAGService
+# 整合性確認機能用サービス
+from services.consistency_service import ConsistencyService
+# AI回答自動生成機能用サービス
+from services.auto_answer_service import AutoAnswerService
+# リーンキャンバス更新案生成機能用サービス
+from services.canvas_update_service import CanvasUpdateService
 
 # ログ設定
 logging.basicConfig(
@@ -49,6 +61,12 @@ app.add_middleware(
 # RAG機能用サービスインスタンス
 file_service = FileService()
 rag_service = RAGService()
+# 整合性確認機能用サービスインスタンス
+consistency_service = ConsistencyService()
+# AI回答自動生成機能用サービスインスタンス
+auto_answer_service = AutoAnswerService()
+# リーンキャンバス更新案生成機能用サービスインスタンス
+canvas_update_service = CanvasUpdateService()
 
 # 依存関数：現在のユーザーを取得
 def get_current_user(session_id: str = Cookie(None)) -> int:
@@ -353,6 +371,187 @@ async def delete_document(
     except Exception as e:
         logger.error(f"文書削除エラー: {e}")
         raise HTTPException(status_code=500, detail="文書削除に失敗しました")
+
+@app.post("/api/projects/{project_id}/consistency-check", response_model=ConsistencyCheckResponse)
+async def check_canvas_consistency(
+    project_id: int,
+    current_user_id: int = Depends(get_current_user)
+):
+    """リーンキャンバス整合性確認"""
+    try:
+        # プロジェクトの存在確認とユーザー権限チェック
+        project = get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        
+        if project["user_id"] != current_user_id:
+            raise HTTPException(status_code=403, detail="他のユーザーのプロジェクトを確認することはできません")
+        
+        # 最新バージョンのキャンバスデータを取得
+        latest_edit_id = get_latest_edit_id(project_id)
+        if not latest_edit_id:
+            raise HTTPException(status_code=404, detail="プロジェクトのキャンバスデータが見つかりません")
+        
+        latest_canvas_details = get_canvas_details(latest_edit_id)
+        if not latest_canvas_details:
+            raise HTTPException(status_code=404, detail="キャンバスの詳細データが見つかりません")
+        
+        # 最新のキャンバスデータを使用して整合性分析を実行
+        analysis_result = await consistency_service.analyze_canvas_consistency({
+            "project_name": project["project_name"],
+            "field": latest_canvas_details
+        })
+        
+        if not analysis_result["success"]:
+            raise HTTPException(status_code=500, detail=analysis_result["message"])
+        
+        return ConsistencyCheckResponse(
+            success=True,
+            analysis=analysis_result["analysis"],
+            analyzed_at=analysis_result["analyzed_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"整合性確認エラー: {e}")
+        raise HTTPException(status_code=500, detail="整合性確認の処理に失敗しました")
+
+@app.post("/api/projects/{project_id}/consistency-check/test", response_model=ConsistencyCheckResponse)
+async def test_canvas_consistency_check(
+    project_id: int
+):
+    """リーンキャンバス整合性確認（テスト用、認証不要）"""
+    try:
+        # プロジェクトの存在確認
+        project = get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        
+        # 最新バージョンのキャンバスデータを取得
+        latest_edit_id = get_latest_edit_id(project_id)
+        if not latest_edit_id:
+            raise HTTPException(status_code=404, detail="プロジェクトのキャンバスデータが見つかりません")
+        
+        latest_canvas_details = get_canvas_details(latest_edit_id)
+        if not latest_canvas_details:
+            raise HTTPException(status_code=404, detail="キャンバスの詳細データが見つかりません")
+        
+        # 最新のキャンバスデータを使用して整合性分析を実行
+        analysis_result = await consistency_service.analyze_canvas_consistency({
+            "project_name": project["project_name"],
+            "field": latest_canvas_details
+        })
+        
+        if not analysis_result["success"]:
+            raise HTTPException(status_code=500, detail=analysis_result["message"])
+        
+        return ConsistencyCheckResponse(
+            success=True,
+            analysis=analysis_result["analysis"],
+            analyzed_at=analysis_result["analyzed_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"整合性確認テストエラー: {e}")
+        raise HTTPException(status_code=500, detail="整合性確認の処理に失敗しました")
+
+@app.post("/api/projects/{project_id}/auto-answer", response_model=AutoAnswerGenerationResponse)
+async def generate_auto_answers(
+    project_id: int,
+    request: AutoAnswerGenerationRequest,
+    current_user_id: int = Depends(get_current_user)
+):
+    """AI回答自動生成"""
+    try:
+        # プロジェクトの存在確認とユーザー権限チェック
+        project = get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        
+        if project["user_id"] != current_user_id:
+            raise HTTPException(status_code=403, detail="他のユーザーのプロジェクトで回答を生成することはできません")
+        
+        # 最新バージョンのキャンバスデータを取得
+        latest_edit_id = get_latest_edit_id(project_id)
+        if not latest_edit_id:
+            raise HTTPException(status_code=404, detail="プロジェクトのキャンバスデータが見つかりません")
+        
+        latest_canvas_details = get_canvas_details(latest_edit_id)
+        if not latest_canvas_details:
+            raise HTTPException(status_code=404, detail="キャンバスの詳細データが見つかりません")
+        
+        # AI回答生成を実行
+        result = await auto_answer_service.generate_answers(
+            project_name=project["project_name"],
+            questions=request.questions,
+            canvas_data=latest_canvas_details
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=result["message"])
+        
+        return AutoAnswerGenerationResponse(
+            success=True,
+            answers=result["answers"],
+            generated_at=result["generated_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI回答生成エラー: {e}")
+        raise HTTPException(status_code=500, detail="AI回答生成の処理に失敗しました")
+
+@app.post("/api/projects/{project_id}/canvas-update", response_model=CanvasUpdateResponse)
+async def generate_canvas_update(
+    project_id: int,
+    request: CanvasUpdateRequest,
+    current_user_id: int = Depends(get_current_user)
+):
+    """リーンキャンバス更新案生成"""
+    try:
+        # プロジェクトの存在確認とユーザー権限チェック
+        project = get_project_by_id(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
+        
+        if project["user_id"] != current_user_id:
+            raise HTTPException(status_code=403, detail="他のユーザーのプロジェクトで更新案を生成することはできません")
+        
+        # 最新バージョンのキャンバスデータを取得
+        latest_edit_id = get_latest_edit_id(project_id)
+        if not latest_edit_id:
+            raise HTTPException(status_code=404, detail="プロジェクトのキャンバスデータが見つかりません")
+        
+        latest_canvas_details = get_canvas_details(latest_edit_id)
+        if not latest_canvas_details:
+            raise HTTPException(status_code=404, detail="キャンバスの詳細データが見つかりません")
+        
+        # リーンキャンバス更新案生成を実行
+        result = await canvas_update_service.generate_canvas_update(
+            project_name=project["project_name"],
+            canvas_data=latest_canvas_details,
+            user_answers=request.user_answers
+        )
+        
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=result["message"])
+        
+        return CanvasUpdateResponse(
+            success=True,
+            updates=result["updates"],
+            updated_canvas=result["updated_canvas"],
+            generated_at=result["generated_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"リーンキャンバス更新案生成エラー: {e}")
+        raise HTTPException(status_code=500, detail="リーンキャンバス更新案生成の処理に失敗しました")
 
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")
