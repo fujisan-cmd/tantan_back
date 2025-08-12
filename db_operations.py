@@ -121,7 +121,7 @@ class ResearchResult(Base):
     edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
     researched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
-    result_text: Mapped[str] = mapped_column(VARCHAR(1000), nullable=False)
+    result_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     edit_history = relationship("EditHistory", backref="research_results")
     user = relationship("User", backref="research_results")
@@ -131,13 +131,14 @@ class InterviewNote(Base):
     __tablename__ = 'interview_notes'
 
     note_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), nullable=False)
-    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
-    interviewee_name: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+    edit_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('edit_history.edit_id', ondelete="CASCADE"), nullable=True)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id', ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id', ondelete="CASCADE"), nullable=False)
+    interviewee_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
     interview_date: Mapped[date] = mapped_column(Date, nullable=False)
     interview_type: Mapped[InterviewType] = mapped_column(SQLEnum(InterviewType), nullable=False)
     interview_note: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     edit_history = relationship("EditHistory", backref="interview_notes")
     project = relationship("Project", backref="interview_notes")
@@ -151,10 +152,17 @@ class Document(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
     file_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
-    file_path: Mapped[str] = mapped_column(VARCHAR(500), nullable=False)
+    file_path: Mapped[Optional[str]] = mapped_column(VARCHAR(500), nullable=True)
     file_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)  # 例: 'pdf', 'image', 'text'
+    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source_type: Mapped[SourceType] = mapped_column(SQLEnum(SourceType), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    processing_status: Mapped[str] = mapped_column(
+        VARCHAR(20),
+        default='pending',
+        nullable=False,
+        server_default='pending',
+    )
 
     user = relationship("User", backref="documents")
     project = relationship("Project", backref="documents")
@@ -193,6 +201,9 @@ class ProjectCreateRequest(BaseModel):
     user_id: int
     project_name: str
     field: Dict[str, Any]
+
+class ProjectWithAI(BaseModel):
+    idea_draft: str
 
 # === CRUD関数 ===
 
@@ -252,11 +263,11 @@ def authenticate_user(email: str, password: str) -> Dict[str, Any]:
         # ユーザー取得
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
+            return {"success": False, "message": "メールアドレスが正しくありません"}
         
         # パスワード検証
         if not verify_password(password, user.hashed_pw):
-            return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
+            return {"success": False, "message": "パスワードが正しくありません"}
         
         # 最終ログイン時刻更新
         user.last_login = func.now()
