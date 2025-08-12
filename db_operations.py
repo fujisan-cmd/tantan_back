@@ -1,6 +1,7 @@
 # CRUD操作とモデル定義
 from sqlalchemy import Column, Integer, Text, VARCHAR, DateTime, Date, Boolean, JSON, ForeignKey
 from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import select, insert, update, delete
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
 from connect_PostgreSQL import SessionLocal, engine
@@ -46,7 +47,7 @@ class User(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(VARCHAR(50), unique=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
+    hashed_pw: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     failed_login_counts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -96,8 +97,7 @@ class Detail(Base):
     __tablename__ = 'details'
     
     edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), primary_key=True)
-    field_name: Mapped[dict] = mapped_column(JSON, nullable=False)
-    field_content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    field: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     edit_history = relationship("EditHistory", backref="details")
 
@@ -121,7 +121,7 @@ class ResearchResult(Base):
     edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
     researched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
-    result_text: Mapped[str] = mapped_column(VARCHAR(1000), nullable=False)
+    result_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     edit_history = relationship("EditHistory", backref="research_results")
     user = relationship("User", backref="research_results")
@@ -131,13 +131,14 @@ class InterviewNote(Base):
     __tablename__ = 'interview_notes'
 
     note_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    edit_id: Mapped[int] = mapped_column(Integer, ForeignKey('edit_history.edit_id'), nullable=False)
-    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
-    interviewee_name: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+    edit_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('edit_history.edit_id', ondelete="CASCADE"), nullable=True)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id', ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id', ondelete="CASCADE"), nullable=False)
+    interviewee_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
     interview_date: Mapped[date] = mapped_column(Date, nullable=False)
     interview_type: Mapped[InterviewType] = mapped_column(SQLEnum(InterviewType), nullable=False)
     interview_note: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     edit_history = relationship("EditHistory", backref="interview_notes")
     project = relationship("Project", backref="interview_notes")
@@ -151,10 +152,17 @@ class Document(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
     file_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
-    file_path: Mapped[str] = mapped_column(VARCHAR(500), nullable=False)
+    file_path: Mapped[Optional[str]] = mapped_column(VARCHAR(500), nullable=True)
     file_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)  # 例: 'pdf', 'image', 'text'
+    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source_type: Mapped[SourceType] = mapped_column(SQLEnum(SourceType), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    processing_status: Mapped[str] = mapped_column(
+        VARCHAR(20),
+        default='pending',
+        nullable=False,
+        server_default='pending',
+    )
 
     user = relationship("User", backref="documents")
     project = relationship("Project", backref="documents")
@@ -182,7 +190,6 @@ class ProjectResponse(BaseModel):
     """プロジェクトレスポンスモデル"""
     project_id: int
     project_name: str
-    description: Optional[str]
     created_at: datetime
 
 class AuthResponse(BaseModel):
@@ -190,17 +197,15 @@ class AuthResponse(BaseModel):
     message: str
     user: Optional[UserResponse] = None
 
-# === CRUD関数 ===
-def get_user_by_id(user_id: int):
-    query = """
-        SELECT user_id, email, created_at
-        FROM users
-        WHERE user_id = %s
-    """
-    with conn.cursor(dictionary=True) as cursor:
-        cursor.execute(query, (user_id,))
-        return cursor.fetchone()
+class ProjectCreateRequest(BaseModel):
+    user_id: int
+    project_name: str
+    field: Dict[str, Any]
 
+class ProjectWithAI(BaseModel):
+    idea_draft: str
+
+# === CRUD関数 ===
 
 def hash_password(password: str) -> str:
     """パスワードをハッシュ化"""
@@ -230,7 +235,7 @@ def create_user(email: str, password: str) -> Dict[str, Any]:
         # 新規ユーザー作成
         new_user = User(
             email=email,
-            hashed_password=hashed_pw
+            hashed_pw=hashed_pw
         )
         
         db.add(new_user)
@@ -258,11 +263,11 @@ def authenticate_user(email: str, password: str) -> Dict[str, Any]:
         # ユーザー取得
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
+            return {"success": False, "message": "メールアドレスが正しくありません"}
         
         # パスワード検証
-        if not verify_password(password, user.hashed_password):
-            return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
+        if not verify_password(password, user.hashed_pw):
+            return {"success": False, "message": "パスワードが正しくありません"}
         
         # 最終ログイン時刻更新
         user.last_login = func.now()
@@ -358,15 +363,13 @@ def get_user_projects(user_id: int) -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:
         projects = db.query(Project).filter(
-            Project.user_id == user_id,
-            Project.is_active == True
+            Project.user_id == user_id
         ).all()
         
         return [
             {
                 "project_id": project.project_id,
                 "project_name": project.project_name,
-                "description": project.description,
                 "created_at": project.created_at
             }
             for project in projects
@@ -384,28 +387,270 @@ def create_tables():
     Base.metadata.create_all(bind=engine)
     logger.info("テーブル作成完了")
 
-def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
-    """指定されたプロジェクトの文書一覧取得"""
+
+def get_latest_edit_id(project_id: int) -> Optional[int]:
+    """指定されたプロジェクトの最新のedit_idを取得"""
     db = SessionLocal()
+    query = select(EditHistory).filter(
+        EditHistory.project_id == project_id
+            ).order_by(EditHistory.last_updated.desc()).limit(1)
+
     try:
-        documents = db.query(Document).filter(
-            Document.project_id == project_id
-        ).order_by(Document.uploaded_at.desc()).all()
-        
-        return [
-            {
-                "document_id": doc.document_id,
-                "file_name": doc.file_name,
-                "file_type": doc.file_type,
-                "source_type": doc.source_type.value,
-                "uploaded_at": doc.uploaded_at
-            }
-            for doc in documents
-        ]
+        with db.begin():
+            result = db.execute(query).scalar_one_or_none()
+            if result:
+                return result.edit_id
+            return None
         
     except Exception as e:
-        logger.error(f"プロジェクト文書取得エラー: {e}")
-        return []
+        logger.error(f"最新のedit_id取得エラー: {e}")
+        return None
+
+def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
+    """指定されたedit_idのキャンバス詳細を取得"""
+    db = SessionLocal()
+    query = select(Detail).filter(Detail.edit_id == edit_id)
+
+    try:
+        with db.begin():
+            result = db.execute(query).scalars().all()
+            if not result:
+                return None
+            
+            details = {detail.edit_id: detail.field for detail in result}
+            return details
+        
+    except Exception as e:
+        logger.error(f"キャンバス詳細取得エラー: {e}")
+        return None
+    
+def insert_project(value):
+    """プロジェクトを挿入"""
+    db = SessionLocal()
+    query = insert(Project).values(value)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            project_id = result.inserted_primary_key[0]
+            logger.info(f"プロジェクト挿入成功: project_id={project_id}")
+            return project_id
+    except Exception as e:
+        db.rollback()
+        logger.error(f"プロジェクト挿入エラー: {e}")
+        return None
     finally:
         db.close()
 
+def insert_edit_history(project_id: int, version: int, user_id: int, update_category: UpdateCategory) -> int:
+    """プロジェクトの編集履歴を挿入"""
+    db = SessionLocal()
+    query = insert(EditHistory).values(project_id=project_id, version=version, user_id=user_id, update_category=update_category)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            edit_id = result.inserted_primary_key[0]
+            logger.info(f"編集履歴挿入成功: edit_id={edit_id}, project_id={project_id}")
+            return edit_id
+    except Exception as e:
+        db.rollback()
+        logger.error(f"編集履歴挿入エラー: {e}")
+        return 0
+    finally:
+        db.close()
+
+def insert_canvas_details(edit_id: int, field: Dict[str, Any]) -> bool:
+    """キャンバスの詳細情報を挿入"""
+    db = SessionLocal()
+    query = insert(Detail).values(edit_id=edit_id, field=field)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            detail_id = result.inserted_primary_key[0]
+            logger.info(f"キャンバス詳細挿入成功: detail_id={detail_id}, edit_id={edit_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"キャンバス詳細挿入エラー: {e}")
+        return False
+    finally:
+        db.close()
+
+# === RAG機能用追加 START ===
+# 注意: データベーススキーマ適用前のため一時的にコメントアウト
+
+# class Document(Base):
+#     """ドキュメントテーブル（RAG対応）"""
+#     __tablename__ = 'documents'
+# 
+#     document_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+#     user_id: Mapped[int] = mapped_column(Integer, ForeignKey('users.user_id'), nullable=False)
+#     project_id: Mapped[int] = mapped_column(Integer, ForeignKey('projects.project_id'), nullable=False)
+#     file_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+#     file_path: Mapped[Optional[str]] = mapped_column(VARCHAR(500), nullable=True)  # RAG: NULL許可
+#     file_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+#     file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+#     source_type: Mapped[str] = mapped_column(VARCHAR(50), nullable=False)
+#     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+#     processing_status: Mapped[str] = mapped_column(VARCHAR(20), default='pending', nullable=False)
+# 
+#     user = relationship("User", backref="documents")
+#     project = relationship("Project", backref="documents")
+
+# class DocumentChunk(Base):
+#     """ドキュメントチャンクテーブル（RAG用ベクトル保存）"""
+#     __tablename__ = 'document_chunks'
+# 
+#     chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+#     document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id'), nullable=False)
+#     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+#     chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
+#     embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
+#     metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+# 
+#     document = relationship("Document", backref="chunks")
+
+# RAG機能用Pydanticモデル
+class DocumentUploadResponse(BaseModel):
+    document_id: int
+    file_name: str
+    file_type: str
+    file_size: int
+    processing_status: str
+    chunks_count: Optional[int] = 0
+    created_at: datetime
+
+class TextDocumentResponse(BaseModel):
+    document_id: int
+    file_name: str
+    file_type: str
+    source_type: str
+    text_preview: str
+    processing_status: str
+    chunks_count: int
+    uploaded_at: datetime
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 10
+
+class SearchResult(BaseModel):
+    chunk_text: str
+    similarity_score: float
+    document_name: str
+    source_type: str
+
+class CanvasGenerationRequest(BaseModel):
+    idea_description: str
+    target_audience: Optional[str] = None
+    industry: Optional[str] = None
+
+# RAG機能用CRUD関数（データベーススキーマ適用前のため一時的にコメントアウト）
+# def create_document_record(user_id: int, project_id: int, file_name: str, 
+#                           file_type: str, file_size: int, source_type: str) -> Optional[int]:
+#     """ドキュメント記録を作成"""
+#     db = SessionLocal()
+#     try:
+#         new_doc = Document(
+#             user_id=user_id,
+#             project_id=project_id,
+#             file_name=file_name,
+#             file_type=file_type,
+#             file_size=file_size,
+#             source_type=source_type,
+#             processing_status='pending'
+#         )
+#         db.add(new_doc)
+#         db.commit()
+#         db.refresh(new_doc)
+#         
+#         logger.info(f"ドキュメント記録作成成功: {file_name} (ID: {new_doc.document_id})")
+#         return new_doc.document_id
+#         
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"ドキュメント記録作成エラー: {e}")
+#         return None
+#     finally:
+#         db.close()
+
+# def update_document_processing_status(document_id: int, status: str) -> bool:
+#     """ドキュメント処理状況を更新"""
+#     db = SessionLocal()
+#     try:
+#         doc = db.query(Document).filter(Document.document_id == document_id).first()
+#         if doc:
+#             doc.processing_status = status
+#             if status == 'completed':
+#                 doc.file_path = None  # RAG処理完了後はfile_pathをクリア
+#             db.commit()
+#             logger.info(f"ドキュメント処理状況更新: {document_id} -> {status}")
+#             return True
+#         return False
+#         
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"ドキュメント処理状況更新エラー: {e}")
+#         return False
+#     finally:
+#         db.close()
+
+# def get_project_documents(project_id: int, user_id: int) -> List[Dict[str, Any]]:
+#     """プロジェクトのドキュメント一覧取得"""
+#     db = SessionLocal()
+#     try:
+#         docs = db.query(Document).filter(
+#             Document.project_id == project_id,
+#             Document.user_id == user_id
+#         ).order_by(Document.uploaded_at.desc()).all()
+#         
+#         result = []
+#         for doc in docs:
+#             # チャンク数を取得
+#             chunk_count = db.query(DocumentChunk).filter(
+#                 DocumentChunk.document_id == doc.document_id
+#             ).count()
+#             
+#             result.append({
+#                 "document_id": doc.document_id,
+#                 "file_name": doc.file_name,
+#                 "file_type": doc.file_type,
+#                 "file_size": doc.file_size,
+#                 "source_type": doc.source_type,
+#                 "processing_status": doc.processing_status,
+#                 "chunks_count": chunk_count,
+#                 "uploaded_at": doc.uploaded_at
+#             })
+#         
+#         return result
+#         
+#     except Exception as e:
+#         logger.error(f"プロジェクトドキュメント取得エラー: {e}")
+#         return []
+#     finally:
+#         db.close()
+
+# def delete_document_record(document_id: int, user_id: int) -> bool:
+#     """ドキュメント記録を削除"""
+#     db = SessionLocal()
+#     try:
+#         doc = db.query(Document).filter(
+#             Document.document_id == document_id,
+#             Document.user_id == user_id
+#         ).first()
+#         
+#         if doc:
+#             # チャンクも一緒に削除される（CASCADE）
+#             db.delete(doc)
+#             db.commit()
+#             logger.info(f"ドキュメント削除成功: {document_id}")
+#             return True
+#         return False
+#         
+#     except Exception as e:
+#         db.rollback()
+#         logger.error(f"ドキュメント削除エラー: {e}")
+#         return False
+#     finally:
+#         db.close()
+
+# === RAG機能用追加 END ===

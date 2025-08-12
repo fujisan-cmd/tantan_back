@@ -1,12 +1,10 @@
-# ファイル処理サービス
+# 一時ファイル処理サービス（RAG機能用）
 import os
+import tempfile
 import magic
-import aiofiles
-from typing import List, Dict, Any, Optional, BinaryIO
+from typing import Dict, Any, BinaryIO
 from fastapi import UploadFile, HTTPException
 from pathlib import Path
-import hashlib
-from datetime import datetime
 import logging
 
 # ドキュメント処理用のインポート
@@ -14,21 +12,19 @@ from docx import Document as DocxDocument
 import PyPDF2
 import openpyxl
 from PIL import Image
+from pptx import Presentation
 import csv
-import json
 
 logger = logging.getLogger(__name__)
 
 class FileService:
-    """ファイル処理関連のビジネスロジック"""
+    """一時ファイル処理とテキスト抽出（永続保存なし）"""
     
     def __init__(self):
         # 設定値
         self.max_file_size = int(os.getenv("MAX_FILE_SIZE", "52428800"))  # 50MB
         self.allowed_extensions = os.getenv("ALLOWED_FILE_EXTENSIONS", 
                                           "pdf,docx,pptx,xlsx,csv,txt,md,png,jpg,gif").split(",")
-        self.upload_dir = Path("uploads")
-        self.upload_dir.mkdir(exist_ok=True)
         
         # MIME型とファイル拡張子のマッピング
         self.mime_mapping = {
@@ -92,55 +88,60 @@ class FileService:
             logger.error(f"ファイル検証エラー: {e}")
             return {"valid": False, "error": "ファイル検証中にエラーが発生しました"}
     
-    async def save_file(self, file: UploadFile, project_id: int, user_id: int) -> Dict[str, Any]:
-        """ファイルを保存"""
+    async def process_uploaded_file_and_extract_text(self, file: UploadFile) -> Dict[str, Any]:
+        """アップロードファイルを一時処理してテキスト抽出（元ファイルは削除）"""
+        temp_file_path = None
         try:
             # ファイルバリデーション
             validation_result = await self.validate_file(file)
             if not validation_result["valid"]:
                 return {"success": False, "message": validation_result["error"]}
             
-            # ファイル名の生成（重複回避のためハッシュを含める）
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_hash = hashlib.md5(f"{user_id}_{project_id}_{file.filename}_{timestamp}".encode()).hexdigest()[:8]
-            safe_filename = f"{timestamp}_{file_hash}_{file.filename}"
-            
-            # 保存パスの作成
-            project_dir = self.upload_dir / f"project_{project_id}"
-            project_dir.mkdir(exist_ok=True)
-            file_path = project_dir / safe_filename
-            
-            # ファイルを保存
-            async with aiofiles.open(file_path, 'wb') as f:
+            # 一時ファイルに保存
+            file_extension = validation_result["extension"]
+            with tempfile.NamedTemporaryFile(
+                suffix=f".{file_extension}", 
+                delete=False
+            ) as temp_file:
+                temp_file_path = temp_file.name
                 content = await file.read()
-                await f.write(content)
+                temp_file.write(content)
             
-            logger.info(f"ファイル保存成功: {file_path}")
+            # テキスト抽出
+            extracted_text = await self.extract_text_from_file(temp_file_path, file_extension)
+            
+            if not extracted_text.strip():
+                return {
+                    "success": False, 
+                    "message": f"ファイルからテキストを抽出できませんでした（{file.filename}）"
+                }
+            
+            logger.info(f"テキスト抽出成功: {file.filename} ({len(extracted_text)}文字)")
             
             return {
                 "success": True,
-                "file_path": str(file_path),
-                "file_name": file.filename,
-                "file_size": validation_result["file_size"],
-                "file_type": validation_result["extension"],
-                "mime_type": validation_result["mime_type"]
+                "extracted_text": extracted_text,
+                "file_info": {
+                    "original_filename": file.filename,
+                    "file_size": validation_result["file_size"],
+                    "file_type": file_extension,
+                    "mime_type": validation_result["mime_type"],
+                    "text_length": len(extracted_text)
+                }
             }
             
         except Exception as e:
-            logger.error(f"ファイル保存エラー: {e}")
-            return {"success": False, "message": f"ファイル保存に失敗しました: {str(e)}"}
-    
-    async def delete_file(self, file_path: str) -> bool:
-        """ファイルを削除"""
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"ファイル削除成功: {file_path}")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"ファイル削除エラー: {e}")
-            return False
+            logger.error(f"ファイル処理エラー: {e}")
+            return {"success": False, "message": f"ファイル処理に失敗しました: {str(e)}"}
+        
+        finally:
+            # 一時ファイルを必ず削除
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                    logger.debug(f"一時ファイル削除: {temp_file_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"一時ファイル削除エラー: {cleanup_error}")
     
     async def extract_text_from_file(self, file_path: str, file_type: str) -> str:
         """ファイルからテキストを抽出"""
@@ -149,6 +150,8 @@ class FileService:
                 return await self._extract_from_pdf(file_path)
             elif file_type == "docx":
                 return await self._extract_from_docx(file_path)
+            elif file_type == "pptx":
+                return await self._extract_from_pptx(file_path)  # PowerPoint対応
             elif file_type == "xlsx":
                 return await self._extract_from_xlsx(file_path)
             elif file_type == "csv":
@@ -170,8 +173,10 @@ class FileService:
         try:
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
+                for page_num, page in enumerate(pdf_reader.pages):
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += f"[ページ {page_num + 1}]\n{page_text}\n\n"
         except Exception as e:
             logger.error(f"PDF抽出エラー: {e}")
         return text
@@ -182,16 +187,32 @@ class FileService:
         try:
             doc = DocxDocument(file_path)
             for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
+                if paragraph.text.strip():
+                    text += paragraph.text + "\n"
         except Exception as e:
             logger.error(f"DOCX抽出エラー: {e}")
+        return text
+    
+    async def _extract_from_pptx(self, file_path: str) -> str:
+        """PowerPointからテキストを抽出"""
+        text = ""
+        try:
+            prs = Presentation(file_path)
+            for slide_num, slide in enumerate(prs.slides):
+                text += f"[スライド {slide_num + 1}]\n"
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        text += shape.text + "\n"
+                text += "\n"
+        except Exception as e:
+            logger.error(f"PPTX抽出エラー: {e}")
         return text
     
     async def _extract_from_xlsx(self, file_path: str) -> str:
         """Excelファイルからテキストを抽出"""
         text = ""
         try:
-            workbook = openpyxl.load_workbook(file_path)
+            workbook = openpyxl.load_workbook(file_path, data_only=True)
             for sheet_name in workbook.sheetnames:
                 sheet = workbook[sheet_name]
                 text += f"[シート: {sheet_name}]\n"
@@ -211,15 +232,21 @@ class FileService:
         """CSVファイルからテキストを抽出"""
         text = ""
         try:
+            # UTF-8で試行
             with open(file_path, 'r', encoding='utf-8', newline='') as file:
                 csv_reader = csv.reader(file)
-                for row in csv_reader:
+                for row_num, row in enumerate(csv_reader):
+                    if row_num == 0:
+                        text += "[ヘッダー]\n"
                     text += "\t".join(row) + "\n"
         except UnicodeDecodeError:
             try:
+                # Shift_JISで再試行
                 with open(file_path, 'r', encoding='shift_jis', newline='') as file:
                     csv_reader = csv.reader(file)
-                    for row in csv_reader:
+                    for row_num, row in enumerate(csv_reader):
+                        if row_num == 0:
+                            text += "[ヘッダー]\n"
                         text += "\t".join(row) + "\n"
             except Exception as e:
                 logger.error(f"CSV抽出エラー: {e}")
@@ -231,12 +258,14 @@ class FileService:
         """テキストファイルからテキストを抽出"""
         text = ""
         try:
-            async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
-                text = await file.read()
+            # UTF-8で試行
+            with open(file_path, 'r', encoding='utf-8') as file:
+                text = file.read()
         except UnicodeDecodeError:
             try:
-                async with aiofiles.open(file_path, 'r', encoding='shift_jis') as file:
-                    text = await file.read()
+                # Shift_JISで再試行
+                with open(file_path, 'r', encoding='shift_jis') as file:
+                    text = file.read()
             except Exception as e:
                 logger.error(f"テキスト抽出エラー: {e}")
         except Exception as e:
@@ -244,14 +273,15 @@ class FileService:
         return text
     
     async def _extract_from_image(self, file_path: str) -> str:
-        """画像ファイルからメタデータを抽出（OCRは今後実装）"""
+        """画像ファイルからメタデータを抽出（OCRは今後実装予定）"""
         text = ""
         try:
             with Image.open(file_path) as img:
                 # 基本的なメタデータを抽出
-                text += f"画像サイズ: {img.size[0]}x{img.size[1]}\n"
-                text += f"画像モード: {img.mode}\n"
-                text += f"ファイル形式: {img.format}\n"
+                text += f"[画像情報]\n"
+                text += f"サイズ: {img.size[0]}x{img.size[1]}px\n"
+                text += f"モード: {img.mode}\n"
+                text += f"形式: {img.format}\n"
                 
                 # EXIFデータがあれば抽出
                 if hasattr(img, '_getexif') and img._getexif():
@@ -266,28 +296,3 @@ class FileService:
         except Exception as e:
             logger.error(f"画像メタデータ抽出エラー: {e}")
         return text
-    
-    async def get_file_stats(self, project_id: Optional[int] = None) -> Dict[str, Any]:
-        """ファイル統計情報を取得"""
-        try:
-            if project_id:
-                project_dir = self.upload_dir / f"project_{project_id}"
-                if not project_dir.exists():
-                    return {"total_files": 0, "total_size": 0}
-                
-                files = list(project_dir.glob("*"))
-            else:
-                files = list(self.upload_dir.rglob("*"))
-            
-            total_files = len([f for f in files if f.is_file()])
-            total_size = sum(f.stat().st_size for f in files if f.is_file())
-            
-            return {
-                "total_files": total_files,
-                "total_size": total_size,
-                "total_size_mb": round(total_size / 1024 / 1024, 2)
-            }
-            
-        except Exception as e:
-            logger.error(f"ファイル統計取得エラー: {e}")
-            return {"total_files": 0, "total_size": 0, "total_size_mb": 0}
