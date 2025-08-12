@@ -1,7 +1,6 @@
 # CRUD操作とモデル定義
 from sqlalchemy import Column, Integer, Text, VARCHAR, DateTime, Date, Boolean, JSON, ForeignKey
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import select, insert, update, delete
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
 from connect_PostgreSQL import SessionLocal, engine
@@ -47,7 +46,7 @@ class User(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(VARCHAR(50), unique=True, nullable=False)
-    hashed_pw: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
+    hashed_password: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     failed_login_counts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -191,13 +190,17 @@ class AuthResponse(BaseModel):
     message: str
     user: Optional[UserResponse] = None
 
-class ProjectCreateRequest(BaseModel):
-    user_id: int
-    project_name: str
-    field_name: Dict[str, Any]
-    field_content: Dict[str, Any]
-
 # === CRUD関数 ===
+def get_user_by_id(user_id: int):
+    query = """
+        SELECT user_id, email, created_at
+        FROM users
+        WHERE user_id = %s
+    """
+    with conn.cursor(dictionary=True) as cursor:
+        cursor.execute(query, (user_id,))
+        return cursor.fetchone()
+
 
 def hash_password(password: str) -> str:
     """パスワードをハッシュ化"""
@@ -227,7 +230,7 @@ def create_user(email: str, password: str) -> Dict[str, Any]:
         # 新規ユーザー作成
         new_user = User(
             email=email,
-            hashed_pw=hashed_pw
+            hashed_password=hashed_pw
         )
         
         db.add(new_user)
@@ -258,7 +261,7 @@ def authenticate_user(email: str, password: str) -> Dict[str, Any]:
             return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
         
         # パスワード検証
-        if not verify_password(password, user.hashed_pw):
+        if not verify_password(password, user.hashed_password):
             return {"success": False, "message": "メールアドレスまたはパスワードが正しくありません"}
         
         # 最終ログイン時刻更新
@@ -381,90 +384,28 @@ def create_tables():
     Base.metadata.create_all(bind=engine)
     logger.info("テーブル作成完了")
 
-
-def get_latest_edit_id(project_id: int) -> Optional[int]:
-    """指定されたプロジェクトの最新のedit_idを取得"""
+def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
+    """指定されたプロジェクトの文書一覧取得"""
     db = SessionLocal()
-    query = select(EditHistory).filter(
-        EditHistory.project_id == project_id
-            ).order_by(EditHistory.last_updated.desc()).limit(1)
-
     try:
-        with db.begin():
-            result = db.execute(query).scalar_one_or_none()
-            if result:
-                return result.edit_id
-            return None
+        documents = db.query(Document).filter(
+            Document.project_id == project_id
+        ).order_by(Document.uploaded_at.desc()).all()
+        
+        return [
+            {
+                "document_id": doc.document_id,
+                "file_name": doc.file_name,
+                "file_type": doc.file_type,
+                "source_type": doc.source_type.value,
+                "uploaded_at": doc.uploaded_at
+            }
+            for doc in documents
+        ]
         
     except Exception as e:
-        logger.error(f"最新のedit_id取得エラー: {e}")
-        return None
-
-def get_canvas_details(edit_id: int) -> Optional[Dict[str, Any]]:
-    """指定されたedit_idのキャンバス詳細を取得"""
-    db = SessionLocal()
-    query = select(Detail).filter(Detail.edit_id == edit_id)
-
-    try:
-        with db.begin():
-            result = db.execute(query).scalars().all()
-            if not result:
-                return None
-            
-            details = {detail.field_name: detail.field_content for detail in result}
-            return details
-        
-    except Exception as e:
-        logger.error(f"キャンバス詳細取得エラー: {e}")
-        return None
-    
-def insert_project(value):
-    """プロジェクトを挿入"""
-    db = SessionLocal()
-    query = insert(Project).values(value)
-    try:
-        with db.begin():
-            result = db.execute(query)
-            project_id = result.inserted_primary_key[0]
-            logger.info(f"プロジェクト挿入成功: project_id={project_id}")
-            return project_id
-    except Exception as e:
-        db.rollback()
-        logger.error(f"プロジェクト挿入エラー: {e}")
-        return None
+        logger.error(f"プロジェクト文書取得エラー: {e}")
+        return []
     finally:
         db.close()
 
-def insert_edit_history(project_id: int, version: int, user_id: int, update_category: UpdateCategory) -> int:
-    """プロジェクトの編集履歴を挿入"""
-    db = SessionLocal()
-    query = insert(EditHistory).values(project_id=project_id, version=version, user_id=user_id, update_category=update_category)
-    try:
-        with db.begin():
-            result = db.execute(query)
-            edit_id = result.inserted_primary_key[0]
-            logger.info(f"編集履歴挿入成功: edit_id={edit_id}, project_id={project_id}")
-            return edit_id
-    except Exception as e:
-        db.rollback()
-        logger.error(f"編集履歴挿入エラー: {e}")
-        return 0
-    finally:
-        db.close()
-
-def insert_canvas_details(edit_id: int, field_name: Dict[str, Any], field_content: Dict[str, Any]) -> bool:
-    """キャンバスの詳細情報を挿入"""
-    db = SessionLocal()
-    query = insert(Detail).values(edit_id=edit_id, field_name=field_name, field_content=field_content)
-    try:
-        with db.begin():
-            result = db.execute(query)
-            detail_id = result.inserted_primary_key[0]
-            logger.info(f"キャンバス詳細挿入成功: detail_id={detail_id}, edit_id={edit_id}")
-            return True
-    except Exception as e:
-        db.rollback()
-        logger.error(f"キャンバス詳細挿入エラー: {e}")
-        return False
-    finally:
-        db.close()

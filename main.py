@@ -9,11 +9,9 @@ import os
 # ローカルモジュールのインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
-    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest,
+    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse,
     create_user, authenticate_user, create_session, validate_session, 
-    get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
-    get_canvas_details,
-    insert_project, insert_edit_history, insert_canvas_details,
+    get_user_by_id, get_user_projects, create_tables, get_project_documents
 )
 
 # ログ設定
@@ -23,18 +21,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# FastAPIアプリケーション
 app = FastAPI(
     title="Idea Spark API",
     description="新規事業開発支援WebアプリケーションのAPI",
     version="1.0.0"
 )
 
+# CORS設定
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 logger.info(f"CORS allowed origins: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # 本番環境ではallowed_originsを使用すること
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -161,7 +161,7 @@ def logout(response: Response):
     response.delete_cookie("session_id")
     return {"message": "ログアウトしました"}
 
-@app.get("/api/auth/me", response_model=UserResponse)
+@app.get("/api/me", response_model=UserResponse)
 def get_current_user_info(current_user_id: int = Depends(get_current_user)):
     """現在のユーザー情報取得"""
     user_info = get_user_by_id(current_user_id)
@@ -176,30 +176,6 @@ def get_projects(current_user_id: int = Depends(get_current_user)):
     projects = get_user_projects(current_user_id)
     return [ProjectResponse(**project) for project in projects]
 
-@app.get("/projects/{project_id}/latest")
-def get_latest_canvas(project_id: int):
-    # response_modelと認証機能は後で実装する
-    edit_id = get_latest_edit_id(project_id)
-    print(f"最新の編集ID: {edit_id}")
-    details = get_canvas_details(edit_id)
-    return details
-
-@app.post("/projects")
-def register_project(request: ProjectCreateRequest):
-    # 'created_at'はDB側で自動設定するため、ここでは指定しない
-    value = {
-        'user_id': request.user_id,
-        'project_name': request.project_name,
-    }
-    project_id = insert_project(value)
-    print(f"新規プロジェクト登録: {project_id}")
-    # edit_historyテーブルにデータを挿入、versionは1に設定、edit_idを返却
-    edit_id = insert_edit_history(project_id, version=1, user_id=request.user_id, update_category="manual")
-    print(f"プロジェクトの編集履歴登録: {edit_id}")
-    # edit_idを使ってdetailテーブルにデータを挿入
-    result = insert_canvas_details(edit_id, request.field_name, request.field_content)
-    return {"project_id": project_id, "edit_id": edit_id, "result": result}
-
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")
 def startup_event():
@@ -211,3 +187,11 @@ def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+@app.get("/projects/{project_id}/documents")
+def get_documents(project_id: int):
+    # response_modelと認証機能は後で実装する
+    documents = get_project_documents(project_id)
+    print(f"プロジェクト{project_id}の文書一覧: {len(documents)}件")
+    return documents

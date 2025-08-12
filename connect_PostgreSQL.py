@@ -58,3 +58,4 @@ def test_database_connection():
     except Exception as e:
         logger.error(f"データベース接続エラー: {e}")
         return {"status": "unhealthy", "message": f"データベース接続エラー: {e}"}
+
