@@ -188,7 +188,7 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
-
+#アップロード文書表示機能
 @app.get("/projects/{project_id}/documents")
 def get_documents(project_id: int):
     # response_modelと認証機能は後で実装する

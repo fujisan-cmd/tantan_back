@@ -46,7 +46,7 @@ class User(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(VARCHAR(50), unique=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
+    hashed_pw: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     failed_login_counts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -191,16 +191,6 @@ class AuthResponse(BaseModel):
     user: Optional[UserResponse] = None
 
 # === CRUD関数 ===
-def get_user_by_id(user_id: int):
-    query = """
-        SELECT user_id, email, created_at
-        FROM users
-        WHERE user_id = %s
-    """
-    with conn.cursor(dictionary=True) as cursor:
-        cursor.execute(query, (user_id,))
-        return cursor.fetchone()
-
 
 def hash_password(password: str) -> str:
     """パスワードをハッシュ化"""
@@ -230,7 +220,7 @@ def create_user(email: str, password: str) -> Dict[str, Any]:
         # 新規ユーザー作成
         new_user = User(
             email=email,
-            hashed_password=hashed_pw
+            hashed_pw=hashed_pw
         )
         
         db.add(new_user)
@@ -383,29 +373,3 @@ def create_tables():
     """テーブル作成"""
     Base.metadata.create_all(bind=engine)
     logger.info("テーブル作成完了")
-
-def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
-    """指定されたプロジェクトの文書一覧取得"""
-    db = SessionLocal()
-    try:
-        documents = db.query(Document).filter(
-            Document.project_id == project_id
-        ).order_by(Document.uploaded_at.desc()).all()
-        
-        return [
-            {
-                "document_id": doc.document_id,
-                "file_name": doc.file_name,
-                "file_type": doc.file_type,
-                "source_type": doc.source_type.value,
-                "uploaded_at": doc.uploaded_at
-            }
-            for doc in documents
-        ]
-        
-    except Exception as e:
-        logger.error(f"プロジェクト文書取得エラー: {e}")
-        return []
-    finally:
-        db.close()
-
