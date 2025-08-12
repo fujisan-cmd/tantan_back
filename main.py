@@ -5,11 +5,18 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 import logging
 import os
+from dotenv import load_dotenv
+from openai import OpenAI
+import json
+
+load_dotenv()
+api_key = os.getenv("API_KEY")
+client = OpenAI(api_key=api_key)
 
 # ローカルモジュールのインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
-    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest,
+    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI,
     create_user, authenticate_user, create_session, validate_session, 
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
     get_canvas_details,
@@ -209,6 +216,22 @@ def register_project(request: ProjectCreateRequest):
     # edit_idを使ってdetailテーブルにデータを挿入
     result = insert_canvas_details(edit_id, request.field)
     return {"project_id": project_id, "edit_id": edit_id, "result": result}
+
+@app.post("/canvas-autogenerate")
+def auto_generate_canvas(request: ProjectWithAI):
+    request = '今から新規事業開発のリーンキャンバスを作成します。' \
+            'アイデアの概要を以下に提示しますので、リーンキャンバスの各項目を日本語で作成してください。'\
+            '解答には余計な文章を挿入せず、必ず以下の書式を埋める形で回答してください。idea_nameなどのkeyは日本語にせずそのまま返してください：{"idea_name": "", "Problem": "","Customer_Segments": "","Unique_Value_Proposition": "","Solution": "","Channels": "","Revenue_Streams": "","Cost_Structure": "","Key_Metrics": "","Unfair_Advantage": "","Early_Adopters": "","Existing_Alternatives": ""} ## アイデア概要' \
+            + request.idea_draft
+    response = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request},
+        ],
+    )
+    output_content = response.choices[0].message.content.strip()
+    result = json.loads(output_content)
+    return result
 
 # === RAG機能用エンドポイント ===
 
