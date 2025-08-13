@@ -229,7 +229,7 @@ def register_project(request: ProjectCreateRequest):
     project_id = insert_project(value)
     print(f"新規プロジェクト登録: {project_id}")
     # edit_historyテーブルにデータを挿入、versionは1に設定、edit_idを返却
-    edit_id = insert_edit_history(project_id, version=1, user_id=request.user_id, update_category="manual")
+    edit_id = insert_edit_history(project_id, version=1, user_id=request.user_id, update_category="manual", update_comment="初回登録")
     print(f"プロジェクトの編集履歴登録: {edit_id}")
     # edit_idを使ってdetailテーブルにデータを挿入
     result = insert_canvas_details(edit_id, request.field)
@@ -253,11 +253,29 @@ def auto_generate_canvas(request: ProjectWithAI):
 
 @app.post("/projects/{project_id}/latest")
 def update_canvas(request: ProjectUpdateRequest):
-    version = get_latest_version(request.project_id)
-    print(f"最新の編集バージョン: {version}")
-    edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category="manual", update_comment=request.update_comment)
-    print(f"プロジェクトの編集履歴登録: {edit_id}")
-    insert_canvas_details(edit_id, request.field)
+    try:
+        version = get_latest_version(request.project_id)
+        if version is None:
+            version = 0  # 初回の場合は0から開始
+        print(f"最新の編集バージョン: {version}")
+        
+        edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category="manual", update_comment=request.update_comment)
+        print(f"プロジェクトの編集履歴登録: {edit_id}")
+        
+        if edit_id == 0:
+            raise HTTPException(status_code=500, detail="編集履歴の登録に失敗しました")
+        
+        success = insert_canvas_details(edit_id, request.field)
+        if not success:
+            raise HTTPException(status_code=500, detail="キャンバス詳細の登録に失敗しました")
+        
+        return {"success": True, "message": "キャンバスが正常に更新されました"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"キャンバス更新エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
 
 # === RAG機能用エンドポイント ===
 
@@ -574,7 +592,6 @@ async def generate_canvas_update(
         
         return CanvasUpdateResponse(
             success=True,
-            updates=result["updates"],
             updated_canvas=result["updated_canvas"],
             generated_at=result["generated_at"]
         )

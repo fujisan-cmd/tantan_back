@@ -24,7 +24,6 @@ class CanvasUpdateService:
             
             return {
                 "success": True,
-                "updates": update_result["updates"],
                 "updated_canvas": update_result["updated_canvas"],
                 "generated_at": datetime.now().isoformat()
             }
@@ -75,30 +74,15 @@ class CanvasUpdateService:
         
         prompt += """
 ## 更新案生成の手順
-1. ユーザーの回答から各リーンキャンバス要素の変更が必要かどうかを判断
+1. ユーザーの回答から各リーンキャンバス要素の変更が必要かどうかを判断（修正不要な部分は変更しない）
 2. 変更が必要な要素について具体的な修正案を考え
-3. 各要素間の関係性を分析し、不整合がある要素を修正
-4. 修正を加えた要素について、その理由を明確に説明
-5. 修正を反映した完全なリーンキャンバスを作成
+3. 各要素間の関係性を分析し、不整合がある要素を修正（修正不要な部分は変更しない）
+4. 修正を反映した完全なリーンキャンバスを作成
 
 ## 出力形式
-以下の2つのJSONを出力してください：
+以下のJSONを出力してください：
 
-### 1. 更新内容の詳細
-```json
-{
-  "updates": [
-    {
-      "field": "Problem",
-      "before": "現在のリーンキャンバスの実際の内容（上記で提供された内容）",
-      "after": "変更後の内容", 
-      "reason": "変更理由の説明"
-    }
-  ]
-}
-```
-
-### 2. 更新後のリーンキャンバス
+### 更新後のリーンキャンバス
 ```json
 {
   "updated_canvas": {
@@ -119,12 +103,9 @@ class CanvasUpdateService:
 ```
 
 ## 重要事項
-- 「before」フィールドには、上記で提供された現在のリーンキャンバスの実際の内容を正確に記載してください。「未記載」や「現在の課題」などの曖昧な表現は使用しないでください。
 - ユーザーの回答と各要素間の整合性のみを重視し、具体的で実用的な改善案を提案してください
 - 可能な限り、変更するfieldの数は少なくしてください
-- 変更理由は明確で分かりやすく説明してください
 - リーンキャンバスの12の要素すべてを含めてください
-- 変更がない要素は、"updates"の中に含めないでください
 - 各要素の内容は具体的で実用的な内容にしてください
 """
         
@@ -156,48 +137,29 @@ class CanvasUpdateService:
             import json
             import re
             
-            updates_match = re.search(r'"updates":\s*\[.*?\]', response, re.DOTALL)
             updated_canvas_match = re.search(r'"updated_canvas":\s*\{.*?\}', response, re.DOTALL)
             
-            updates = []
             updated_canvas = {}
-            
-            if updates_match:
-                updates_text = "{" + updates_match.group() + "}"
-                updates_data = json.loads(updates_text)
-                updates = updates_data.get("updates", [])
             
             if updated_canvas_match:
                 canvas_text = "{" + updated_canvas_match.group() + "}"
                 canvas_data = json.loads(canvas_text)
                 updated_canvas = canvas_data.get("updated_canvas", {})
             
-            if not updates or not updated_canvas:
+            if not updated_canvas:
                 try:
                     full_response = json.loads(response)
-                    if not updates:
-                        updates = full_response.get("updates", [])
-                    if not updated_canvas:
-                        updated_canvas = full_response.get("updated_canvas", {})
+                    updated_canvas = full_response.get("updated_canvas", {})
                 except:
                     pass
             
             return {
-                "updates": updates,
                 "updated_canvas": updated_canvas
             }
                 
         except Exception as e:
             logger.error(f"JSON解析エラー: {e}")
             return {
-                "updates": [
-                    {
-                        "field": "Problem",
-                        "before": "現在の課題",
-                        "after": "改善された課題",
-                        "reason": "ユーザーの回答に基づく改善"
-                    }
-                ],
                 "updated_canvas": {
                     "idea_name": "更新されたアイデア名",
                     "Problem": "更新された課題",
