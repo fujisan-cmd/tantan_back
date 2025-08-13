@@ -205,6 +205,12 @@ class ProjectCreateRequest(BaseModel):
 class ProjectWithAI(BaseModel):
     idea_draft: str
 
+class ProjectUpdateRequest(BaseModel):
+    project_id: int
+    user_id: int
+    update_comment: str
+    field: Dict[str, Any]
+
 # === CRUD関数 ===
 
 def hash_password(password: str) -> str:
@@ -441,10 +447,19 @@ def insert_project(value):
     finally:
         db.close()
 
-def insert_edit_history(project_id: int, version: int, user_id: int, update_category: UpdateCategory) -> int:
+def insert_edit_history(project_id: int, version: int, user_id: int, update_category: UpdateCategory, update_comment: Optional[str]) -> int:
     """プロジェクトの編集履歴を挿入"""
     db = SessionLocal()
-    query = insert(EditHistory).values(project_id=project_id, version=version, user_id=user_id, update_category=update_category)
+
+    values = {
+        "project_id": project_id,
+        "version": version,
+        "user_id": user_id,
+        "update_category": update_category,
+    }
+    if update_comment:
+        values["update_comment"] = update_comment
+    query = insert(EditHistory).values(values)
     try:
         with db.begin():
             result = db.execute(query)
@@ -475,6 +490,23 @@ def insert_canvas_details(edit_id: int, field: Dict[str, Any]) -> bool:
     finally:
         db.close()
 
+def get_latest_version(project_id: int):
+    db = SessionLocal()
+    query = select(EditHistory).filter(
+        EditHistory.project_id == project_id
+            ).order_by(EditHistory.last_updated.desc()).limit(1)
+
+    try:
+        with db.begin():
+            result = db.execute(query).scalars().first()
+            if result:
+                return result.version
+            return None
+
+    except Exception as e:
+        logger.error(f"最新のバージョン取得エラー: {e}")
+        return None
+    
 def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
     """指定されたプロジェクトの文書一覧取得"""
     db = SessionLocal()
