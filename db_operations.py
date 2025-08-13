@@ -709,7 +709,6 @@ class CanvasUpdateRequest(BaseModel):
 class CanvasUpdateResponse(BaseModel):
     """リーンキャンバス更新案生成レスポンスモデル"""
     success: bool
-    updates: Optional[List[Dict[str, Any]]] = None
     updated_canvas: Optional[Dict[str, Any]] = None
     generated_at: Optional[str] = None
     
