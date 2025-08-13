@@ -5,7 +5,7 @@ from sqlalchemy import select, insert, update, delete
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
 from sqlalchemy.sql import func
 from connect_PostgreSQL import SessionLocal, engine
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, computed_field
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional, List, Dict, Any
 from enum import Enum
@@ -387,6 +387,27 @@ def get_user_projects(user_id: int) -> List[Dict[str, Any]]:
     finally:
         db.close()
 
+def get_project_by_id(project_id: int) -> Optional[Dict[str, Any]]:
+    """指定されたプロジェクトIDのプロジェクト情報を取得"""
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter(Project.project_id == project_id).first()
+        
+        if project:
+            return {
+                "project_id": project.project_id,
+                "project_name": project.project_name,
+                "user_id": project.user_id,
+                "created_at": project.created_at
+            }
+        return None
+        
+    except Exception as e:
+        logger.error(f"プロジェクト取得エラー: {e}")
+        return None
+    finally:
+        db.close()
+
 # テーブル作成
 def create_tables():
     """テーブル作成"""
@@ -531,6 +552,53 @@ def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
     finally:
         db.close()
 
+def record_consistency_check(project_id: int, user_id: int, analysis_result: Dict[str, str]) -> bool:
+    """整合性確認の結果をデータベースに記録"""
+    try:
+        with SessionLocal() as session:
+            # 最新のバージョンを取得
+            latest_edit = session.query(EditHistory).filter(
+                EditHistory.project_id == project_id
+            ).order_by(EditHistory.version.desc()).first()
+            
+            if latest_edit:
+                new_version = latest_edit.version + 1
+            else:
+                new_version = 1
+            
+            # 編集履歴を作成
+            edit_history = EditHistory(
+                project_id=project_id,
+                version=new_version,
+                user_id=user_id,
+                update_category=UpdateCategory.consistency_check,
+                update_comment="AI整合性確認による改善提案"
+            )
+            session.add(edit_history)
+            session.flush()  # edit_idを取得するためにflush
+            
+            # 分析結果をJSONフィールドに保存
+            analysis_field = {
+                "consistency_analysis": analysis_result,
+                "analysis_type": "consistency_check",
+                "analyzed_at": datetime.now().isoformat()
+            }
+            
+            canvas_detail = Detail(
+                edit_id=edit_history.edit_id,
+                field=analysis_field
+            )
+            session.add(canvas_detail)
+            session.commit()
+            
+            logger.info(f"整合性確認結果を記録しました: project_id={project_id}, edit_id={edit_history.edit_id}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"整合性確認結果の記録エラー: {e}")
+        return False
+
+
 # === RAG機能用追加 START ===
 # 注意: データベーススキーマ適用前のため一時的にコメントアウト
 
@@ -599,6 +667,57 @@ class CanvasGenerationRequest(BaseModel):
     idea_description: str
     target_audience: Optional[str] = None
     industry: Optional[str] = None
+
+class ConsistencyCheckRequest(BaseModel):
+    """リーンキャンバス整合性確認リクエストモデル（現在は空、将来の拡張用）"""
+    pass
+
+class ConsistencyCheckResponse(BaseModel):
+    """リーンキャンバス整合性確認レスポンスモデル"""
+    success: bool
+    analysis: Optional[Dict[str, Dict[str, str]]] = None
+    analyzed_at: Optional[str] = None
+    
+    @computed_field
+    @property
+    def message(self) -> Optional[str]:
+        """エラーメッセージ（エラー時のみ）"""
+        return None if self.success else "エラーが発生しました"
+
+class AutoAnswerGenerationRequest(BaseModel):
+    """AI回答自動生成リクエストモデル"""
+    project_id: int
+    questions: List[Dict[str, Any]]  # 質問とその内容
+
+class AutoAnswerGenerationResponse(BaseModel):
+    """AI回答自動生成レスポンスモデル"""
+    success: bool
+    answers: Optional[List[str]] = None
+    generated_at: Optional[str] = None
+    
+    @computed_field
+    @property
+    def message(self) -> Optional[str]:
+        """エラーメッセージ（エラー時のみ）"""
+        return None if self.success else "エラーが発生しました"
+
+class CanvasUpdateRequest(BaseModel):
+    """リーンキャンバス更新案生成リクエストモデル"""
+    project_id: int
+    user_answers: List[Dict[str, Any]]  # ユーザーの回答内容
+
+class CanvasUpdateResponse(BaseModel):
+    """リーンキャンバス更新案生成レスポンスモデル"""
+    success: bool
+    updates: Optional[List[Dict[str, Any]]] = None
+    updated_canvas: Optional[Dict[str, Any]] = None
+    generated_at: Optional[str] = None
+    
+    @computed_field
+    @property
+    def message(self) -> Optional[str]:
+        """エラーメッセージ（エラー時のみ）"""
+        return None if self.success else "エラーが発生しました"
 
 # RAG機能用CRUD関数（データベーススキーマ適用前のため一時的にコメントアウト）
 # def create_document_record(user_id: int, project_id: int, file_name: str, 
