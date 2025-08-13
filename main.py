@@ -18,7 +18,7 @@ from connect_PostgreSQL import test_database_connection
 from db_operations import (
     UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI, ProjectUpdateRequest,
     create_user, authenticate_user, create_session, validate_session, 
-    get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
+    get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version,
     insert_project, insert_edit_history, insert_canvas_details,
     # RAG機能用追加
@@ -292,23 +292,23 @@ async def upload_and_process_file(
         logger.error(f"ファイル処理エラー: {e}")
         raise HTTPException(status_code=500, detail=f"ファイル処理に失敗しました: {str(e)}")
 
-@app.get("/api/projects/{project_id}/documents")
-async def get_project_documents_list(
-    project_id: int,
-    current_user_id: int = Depends(get_current_user)
-):
-    """プロジェクトのアップロード済み文書一覧取得"""
-    try:
-        # documents = get_project_documents(project_id, current_user_id)
-        # 一時的なレスポンス（データベーススキーマ適用前）
-        return {
-            "message": "文書一覧機能は準備中です",
-            "documents": []
-        }
+# @app.get("/api/projects/{project_id}/documents")
+# async def get_project_documents_list(
+#     project_id: int,
+#     current_user_id: int = Depends(get_current_user)
+# ):
+#     """プロジェクトのアップロード済み文書一覧取得"""
+#     try:
+#         # documents = get_project_documents(project_id, current_user_id)
+#         # 一時的なレスポンス（データベーススキーマ適用前）
+#         return {
+#             "message": "文書一覧機能は準備中です",
+#             "documents": []
+#         }
         
-    except Exception as e:
-        logger.error(f"文書一覧取得エラー: {e}")
-        raise HTTPException(status_code=500, detail="文書一覧の取得に失敗しました")
+#     except Exception as e:
+#         logger.error(f"文書一覧取得エラー: {e}")
+#         raise HTTPException(status_code=500, detail="文書一覧の取得に失敗しました")
 
 @app.post("/api/projects/{project_id}/search")
 async def search_relevant_content(
@@ -384,7 +384,7 @@ async def delete_document(
     except Exception as e:
         logger.error(f"文書削除エラー: {e}")
         raise HTTPException(status_code=500, detail="文書削除に失敗しました")
-
+    
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")
 def startup_event():
@@ -396,3 +396,14 @@ def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+#アップロード文書表示機能
+@app.get("/projects/{project_id}/documents")
+def get_documents(project_id: int, current_user_id: int = Depends(get_current_user)):
+    try:
+        documents = get_project_documents(project_id)
+        print(f"プロジェクト{project_id}の文書一覧: {len(documents)}件")
+        return documents
+    except Exception as e:
+        logger.error(f"文書一覧取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="文書一覧の取得に失敗しました")
