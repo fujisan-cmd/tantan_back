@@ -16,10 +16,10 @@ client = OpenAI(api_key=api_key)
 # ローカルモジュールのインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
-    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI,
+    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI, ProjectUpdateRequest,
     create_user, authenticate_user, create_session, validate_session, 
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id,
-    get_canvas_details,
+    get_canvas_details, get_latest_version,
     insert_project, insert_edit_history, insert_canvas_details,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest
@@ -232,6 +232,14 @@ def auto_generate_canvas(request: ProjectWithAI):
     output_content = response.choices[0].message.content.strip()
     result = json.loads(output_content)
     return result
+
+@app.post("/projects/{project_id}/latest")
+def update_canvas(request: ProjectUpdateRequest):
+    version = get_latest_version(request.project_id)
+    print(f"最新の編集バージョン: {version}")
+    edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category="manual", update_comment=request.update_comment)
+    print(f"プロジェクトの編集履歴登録: {edit_id}")
+    insert_canvas_details(edit_id, request.field)
 
 # === RAG機能用エンドポイント ===
 
