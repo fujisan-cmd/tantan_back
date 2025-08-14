@@ -598,6 +598,21 @@ def record_consistency_check(project_id: int, user_id: int, analysis_result: Dic
         logger.error(f"整合性確認結果の記録エラー: {e}")
         return False
 
+def insert_research_result(edit_id: int, user_id: int, result_text: str) -> bool:
+    db = SessionLocal()
+    query = insert(ResearchResult).values(edit_id=edit_id, user_id=user_id, result_text=result_text)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            research_id = result.inserted_primary_key[0]
+            logger.info(f"リサーチ結果挿入成功: research_id={research_id}, edit_id={edit_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"リサーチ結果挿入エラー: {e}")
+        return False
+    finally:
+        db.close()
 
 # === RAG機能用追加 START ===
 # 注意: データベーススキーマ適用前のため一時的にコメントアウト
