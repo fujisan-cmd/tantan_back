@@ -318,6 +318,48 @@ def execute_research(project_id: int, user_id: int):
     is_success = insert_research_result(edit_id, user_id, output_content1)
     return {"success": is_success, "research_result": output_content1, "update_proposal": output_content2}
 
+@app.post("/projects/{project_id}/interview-preparation")
+def interview_preparation(project_id: int, sel: str):
+    edit_id = get_latest_edit_id(project_id)
+    details = get_canvas_details(edit_id)
+    current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
+
+    if sel == 'CPF':
+        purpose = 'CustomerとProblemの整合性、すなわち想定している顧客が本当にその課題を持っているか、その課題が本当に痛みを伴うものか'
+    elif sel == 'PSF':
+        purpose = 'ProblemとSolutionの整合性、すなわち提案するソリューションが本当にその課題を解決できるか、顧客がそのソリューションを求めるか'
+
+    request1 = '現在リーンキャンバスをもとに新規事業開発を検討しています。' \
+            '開発の概要は以下の通りです。' + str(current_canvas) + \
+            'ここで、' + purpose + 'を確認するためのインタビューを行いたいと考えています。' \
+            '理想的なインタビュー対象者を、余計な文章を挿入せずに、必ず ' \
+            '属性: [属性の箇条書きリスト], 特徴: [特徴の箇条書きリスト], 選定基準: [選定基準の箇条書きリスト] のように、JSON形式で回答してください。'
+    response1 = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request1},
+        ],
+    )
+    output_content1 = response1.choices[0].message.content.strip() # インタビュイーのテキスト
+
+    request2 = '現在リーンキャンバスをもとに新規事業開発を検討しています。' \
+            '開発の概要は以下の通りです。' + str(current_canvas) + \
+            'ここで、' + purpose + 'を確認するため、以下のような人物にインタビューを行いたいと考えています。' \
+            + str(output_content1) + \
+            'およそ1時間のインタビュー時間で、この人物に対して効果的に仮説検証を行うための質問案を、余計な文章を挿入せずに、必ず' \
+            '顧客の基本情報: [基本情報に関する質問案の箇条書きリスト], 現在の課題と痛み: [現在の課題と痛みに関する質問案の箇条書きリスト], ' \
+            '代替手段の利用状況: [代替手段の利用状況に関する質問案の箇条書きリスト], 価値観と意思決定要因: [価値観と意思決定要因に関する質問案の箇条書きリスト]' \
+            'のように、JSON形式で回答してください。'
+    response2 = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request2},
+        ],
+    )
+    output_content2 = response2.choices[0].message.content.strip() # 質問案のテキスト
+
+    return {"interviewee": output_content1, "questions": output_content2}
+
 # === RAG機能用エンドポイント ===
 
 @app.post("/api/projects/{project_id}/upload-and-process")
