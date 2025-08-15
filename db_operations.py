@@ -668,18 +668,18 @@ def get_all_interview_notes(project_id: int):
 #     user = relationship("User", backref="documents")
 #     project = relationship("Project", backref="documents")
 
-# class DocumentChunk(Base):
-#     """ドキュメントチャンクテーブル（RAG用ベクトル保存）"""
-#     __tablename__ = 'document_chunks'
-# 
-#     chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-#     document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id'), nullable=False)
-#     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-#     chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
-#     embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
-#     metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-# 
-#     document = relationship("Document", backref="chunks")
+class DocumentChunk(Base):
+    """ドキュメントチャンクテーブル（RAG用ベクトル保存）"""
+    __tablename__ = 'document_chunks'
+
+    chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id'), nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
+    chunk_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    document = relationship("Document", backref="chunks")
 
 # RAG機能用Pydanticモデル
 class DocumentUploadResponse(BaseModel):
@@ -766,34 +766,34 @@ class CanvasUpdateResponse(BaseModel):
         """エラーメッセージ（エラー時のみ）"""
         return None if self.success else "エラーが発生しました"
 
-# RAG機能用CRUD関数（データベーススキーマ適用前のため一時的にコメントアウト）
-# def create_document_record(user_id: int, project_id: int, file_name: str, 
-#                           file_type: str, file_size: int, source_type: str) -> Optional[int]:
-#     """ドキュメント記録を作成"""
-#     db = SessionLocal()
-#     try:
-#         new_doc = Document(
-#             user_id=user_id,
-#             project_id=project_id,
-#             file_name=file_name,
-#             file_type=file_type,
-#             file_size=file_size,
-#             source_type=source_type,
-#             processing_status='pending'
-#         )
-#         db.add(new_doc)
-#         db.commit()
-#         db.refresh(new_doc)
-#         
-#         logger.info(f"ドキュメント記録作成成功: {file_name} (ID: {new_doc.document_id})")
-#         return new_doc.document_id
-#         
-#     except Exception as e:
-#         db.rollback()
-#         logger.error(f"ドキュメント記録作成エラー: {e}")
-#         return None
-#     finally:
-#         db.close()
+# RAG機能用CRUD関数
+def create_document_record(user_id: int, project_id: int, file_name: str, 
+                          file_type: str, file_size: int, source_type: str) -> Optional[int]:
+    """ドキュメント記録を作成"""
+    db = SessionLocal()
+    try:
+        new_doc = Document(
+            user_id=user_id,
+            project_id=project_id,
+            file_name=file_name,
+            file_type=file_type,
+            file_size=file_size,
+            source_type=source_type,
+            processing_status='pending'
+        )
+        db.add(new_doc)
+        db.commit()
+        db.refresh(new_doc)
+        
+        logger.info(f"ドキュメント記録作成成功: {file_name} (ID: {new_doc.document_id})")
+        return new_doc.document_id
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"ドキュメント記録作成エラー: {e}")
+        return None
+    finally:
+        db.close()
 
 # def update_document_processing_status(document_id: int, status: str) -> bool:
 #     """ドキュメント処理状況を更新"""

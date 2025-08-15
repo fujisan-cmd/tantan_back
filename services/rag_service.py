@@ -7,9 +7,13 @@ from langchain_openai import OpenAIEmbeddings
 import tiktoken
 import logging
 from datetime import datetime
+import json
+import psycopg2
+from psycopg2.extras import Json
 
 # 現在のプロジェクト構造に合わせてインポート修正
 from connect_PostgreSQL import SessionLocal
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +91,21 @@ class RAGService:
             # データベースに保存
             result = await self._store_document_chunks(document_id, chunk_data)
             
-            logger.info(f"ドキュメント処理完了: {document_id}, {len(chunk_data)}チャンク")
+            # 保存結果をチェック
+            if not result.get("success", False):
+                logger.error(f"チャンク保存失敗: {result.get('message', 'Unknown error')}")
+                return {
+                    "success": False,
+                    "message": f"チャンクの保存に失敗しました: {result.get('message', 'Unknown error')}"
+                }
+            
+            logger.info(f"ドキュメント処理完了: {document_id}, {len(chunk_data)}チャンク, 保存確認済み")
             return {
                 "success": True,
                 "chunks_processed": len(chunk_data),
                 "total_tokens": sum(chunk["metadata"]["token_count"] for chunk in chunk_data),
-                "message": "ドキュメントのRAG処理が完了しました"
+                "message": "ドキュメントのRAG処理が完了しました",
+                "storage_result": result  # デバッグ用
             }
             
         except Exception as e:
@@ -169,42 +182,83 @@ class RAGService:
             raise
     
     async def _store_document_chunks(self, document_id: int, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """ドキュメントのチャンクとベクトルを保存"""
+        """ドキュメントのチャンクとベクトルを保存（直接psycopg2を使用）"""
+        logger.info(f"[DEBUG] チャンク保存開始: document_id={document_id}, chunks数={len(chunks)}")
+        
+        # SQLAlchemy接続から生のpsycopg2接続を取得
         db = SessionLocal()
         try:
-            # 既存のチャンクを削除
-            db.execute(
-                "DELETE FROM document_chunks WHERE document_id = %s",
-                (document_id,)
-            )
+            # SQLAlchemyのコネクションから生のpsycopg2コネクションを取得
+            connection = db.get_bind().raw_connection()
+            cursor = connection.cursor()
             
-            # 新しいチャンクを挿入
-            for chunk in chunks:
-                db.execute(
-                    """
-                    INSERT INTO document_chunks (document_id, chunk_text, chunk_order, embedding, metadata)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (
-                        document_id,
-                        chunk['text'],
-                        chunk['order'],
-                        chunk['embedding'],  # pgvectorの vector型
-                        chunk.get('metadata', {})
-                    )
+            try:
+                # 既存のチャンクを削除
+                logger.info(f"[DEBUG] 既存チャンク削除: document_id={document_id}")
+                cursor.execute(
+                    "DELETE FROM document_chunks WHERE document_id = %s",
+                    (document_id,)
                 )
-            
-            db.commit()
-            logger.info(f"チャンク保存成功: ドキュメント {document_id}, {len(chunks)}チャンク")
-            return {
-                "success": True,
-                "chunks_stored": len(chunks),
-                "message": "チャンクとベクトルが保存されました"
-            }
+                logger.info(f"[DEBUG] 削除されたチャンク数: {cursor.rowcount}")
+                
+                # 新しいチャンクを挿入
+                logger.info(f"[DEBUG] 新しいチャンク挿入開始")
+                for i, chunk in enumerate(chunks):
+                    logger.info(f"[DEBUG] チャンク {i+1}/{len(chunks)} 処理中: text長={len(chunk['text'])}, order={chunk['order']}, embedding長={len(chunk['embedding'])}")
+                    
+                    try:
+                        # psycopg2でベクトルとJSONBを挿入
+                        cursor.execute(
+                            """
+                            INSERT INTO document_chunks (document_id, chunk_text, chunk_order, embedding, chunk_metadata)
+                            VALUES (%s, %s, %s, %s::vector, %s)
+                            """,
+                            (
+                                document_id,
+                                chunk['text'],
+                                chunk['order'],
+                                chunk['embedding'],  # リストのまま渡す
+                                Json(chunk.get('metadata', {}))  # psycopg2.extras.Json()を使用
+                            )
+                        )
+                        logger.info(f"[DEBUG] チャンク {i+1} 挿入成功: rowcount={cursor.rowcount}")
+                        
+                    except Exception as chunk_error:
+                        logger.error(f"[DEBUG] チャンク {i+1} 挿入エラー: {chunk_error}")
+                        raise chunk_error
+                
+                # コミット
+                logger.info(f"[DEBUG] 全チャンク挿入完了、コミット実行")
+                connection.commit()
+                
+                # 確認クエリ
+                cursor.execute(
+                    "SELECT COUNT(*) FROM document_chunks WHERE document_id = %s",
+                    (document_id,)
+                )
+                actual_count = cursor.fetchone()[0]
+                logger.info(f"[DEBUG] 保存後の確認: document_id={document_id}のチャンク数={actual_count}")
+                
+                logger.info(f"チャンク保存成功: ドキュメント {document_id}, {len(chunks)}チャンク")
+                return {
+                    "success": True,
+                    "chunks_stored": len(chunks),
+                    "message": "チャンクとベクトルが保存されました"
+                }
+                
+            except Exception as e:
+                logger.error(f"[DEBUG] チャンク保存エラー発生、ロールバック実行")
+                connection.rollback()
+                raise e
+                
+            finally:
+                cursor.close()
+                connection.close()
             
         except Exception as e:
-            db.rollback()
-            logger.error(f"チャンク保存エラー: {e}")
+            logger.error(f"チャンク保存エラー: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"エラー詳細: {traceback.format_exc()}")
             return {"success": False, "message": f"チャンク保存に失敗しました: {str(e)}"}
         finally:
             db.close()
