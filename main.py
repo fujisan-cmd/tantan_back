@@ -23,6 +23,7 @@ from db_operations import (
     insert_project, insert_edit_history, insert_canvas_details,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
+    create_document_record,  # 追加
     # 整合性確認機能用追加
     ConsistencyCheckRequest, ConsistencyCheckResponse,
     # AI回答自動生成機能用追加
@@ -296,32 +297,41 @@ async def upload_and_process_file(
         if not extraction_result["success"]:
             raise HTTPException(status_code=400, detail=extraction_result["message"])
         
-        # 2. ドキュメント記録をDBに作成（一時的にコメントアウトされた関数を使用予定）
-        # document_id = create_document_record(
-        #     user_id=current_user_id,
-        #     project_id=project_id,
-        #     file_name=extraction_result["file_info"]["original_filename"],
-        #     file_type=extraction_result["file_info"]["file_type"],
-        #     file_size=extraction_result["file_info"]["file_size"],
-        #     source_type=source_type
-        # )
+        # 2. ドキュメント記録をDBに作成
+        document_id = create_document_record(
+            user_id=current_user_id,
+            project_id=project_id,
+            file_name=extraction_result["file_info"]["original_filename"],
+            file_type=extraction_result["file_info"]["file_type"],
+            file_size=extraction_result["file_info"]["file_size"],
+            source_type=source_type
+        )
+        
+        if not document_id:
+            raise HTTPException(status_code=500, detail="ドキュメント記録の作成に失敗しました")
         
         # 3. RAG処理（テキスト分割・ベクトル化・保存）
-        # rag_result = await rag_service.process_text_for_rag(
-        #     document_id=document_id,
-        #     text_content=extraction_result["extracted_text"]
-        # )
+        rag_result = await rag_service.process_text_for_rag(
+            document_id=document_id,
+            text_content=extraction_result["extracted_text"]
+        )
+        
+        if not rag_result["success"]:
+            logger.error(f"RAG処理失敗: {rag_result.get('message', 'Unknown error')}")
+            # ドキュメント記録は残す（失敗状態で）
         
         # 4. 処理状況更新
-        # update_document_processing_status(document_id, 'completed')
+        # update_document_processing_status(document_id, 'completed' if rag_result["success"] else 'failed')
         
-        # 一時的なレスポンス（データベーススキーマ適用前）
+        # 処理完了レスポンス
         logger.info(f"ファイル処理完了: {file.filename}")
         return {
-            "message": "ファイル処理が完了しました",
+            "message": "ファイル処理とRAG処理が完了しました",
+            "document_id": document_id,
             "file_info": extraction_result["file_info"],
             "text_length": len(extraction_result["extracted_text"]),
-            "text_preview": extraction_result["extracted_text"][:200] + "..."
+            "text_preview": extraction_result["extracted_text"][:200] + "...",
+            "rag_processing": rag_result if 'rag_result' in locals() else {"success": False, "message": "RAG処理がスキップされました"}
         }
         
     except Exception as e:
