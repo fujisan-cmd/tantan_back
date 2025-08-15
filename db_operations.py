@@ -598,6 +598,54 @@ def record_consistency_check(project_id: int, user_id: int, analysis_result: Dic
         logger.error(f"整合性確認結果の記録エラー: {e}")
         return False
 
+def insert_research_result(edit_id: int, user_id: int, result_text: str) -> bool:
+    db = SessionLocal()
+    query = insert(ResearchResult).values(edit_id=edit_id, user_id=user_id, result_text=result_text)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            research_id = result.inserted_primary_key[0]
+            logger.info(f"リサーチ結果挿入成功: research_id={research_id}, edit_id={edit_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"リサーチ結果挿入エラー: {e}")
+        return False
+    finally:
+        db.close()
+
+def get_all_interview_notes(project_id: int):
+    db = SessionLocal()
+    query = select(
+        InterviewNote.interviewee_name,
+        InterviewNote.interview_date,
+        InterviewNote.user_id,
+        InterviewNote.edit_id,
+        EditHistory.version,
+        User.email,
+    )\
+    .join(EditHistory, InterviewNote.edit_id == EditHistory.edit_id, isouter=True)\
+    .join(User, InterviewNote.user_id == User.user_id, isouter=True)\
+    .filter(InterviewNote.project_id == project_id)
+    try:
+        with db.begin():
+            rows = db.execute(query).all()
+            if not rows:
+                return None
+            
+            result = []
+            for name, idate, user_id, edit_id, version, email in rows:
+                result.append({
+                    "interviewee_name": name,
+                    "interview_date": idate,
+                    "user_id": user_id,
+                    "edit_id": edit_id,
+                    "version": version,
+                    "email": email,
+                })
+            return result
+    finally:
+        db.close()
 
 # === RAG機能用追加 START ===
 # 注意: データベーススキーマ適用前のため一時的にコメントアウト

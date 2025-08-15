@@ -20,7 +20,8 @@ from db_operations import (
     create_user, authenticate_user, create_session, validate_session, 
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version, get_project_by_id,
-    insert_project, insert_edit_history, insert_canvas_details,
+    insert_project, insert_edit_history, insert_canvas_details, 
+    insert_research_result, get_all_interview_notes,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
@@ -277,6 +278,93 @@ def update_canvas(request: ProjectUpdateRequest):
     except Exception as e:
         print(f"キャンバス更新エラー: {e}")
         raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
+
+@app.post("/projects/{project_id}/research")
+def execute_research(project_id: int, user_id: int):
+    edit_id = get_latest_edit_id(project_id)
+    details = get_canvas_details(edit_id)
+    current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
+
+    # 本当はここの検索対象にRAGが追加される
+    request1 = '現在リーンキャンバスをもとに新規事業開発を検討しています。以下に開発内容の概要を提示しますので、' \
+            '以下の調査項目欄に指定した観点で調査を行ってください。' \
+            '## 調査項目 - 3C分析(市場の成長性・競合他社状況・顧客のニーズ) - 技術調査(必要な技術・実現可能性) - 法規制調査 ' \
+            '調査結果は簡潔に箇条書きでまとめ、余計な文章を挿入せずに、必ず以下の書式欄を埋める形で回答してください。' \
+            '【市場調査結果】1. 市場の成長性 2. 競合分析 3. 顧客ニーズ調査【技術調査結果】1. 必要な技術と要求仕様 2. 実現可能性【法規制事項】1. 規制' \
+            '## アイデア概要 '+str(current_canvas)
+    response1 = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request1},
+        ],
+    )
+    output_content1 = response1.choices[0].message.content.strip() # 調査結果のテキスト
+    
+    request2 = '現在リーンキャンバスをもとに新規事業開発を検討しています。以下に開発内容の概要は以下の通りです。' \
+            + str(current_canvas) + \
+            'また、このリーンキャンバスをもとに外部環境調査などを行った結果が以下の通りです。' \
+            + output_content1 + \
+            '両者を比較したうえで、リーンキャンバスを更新した方が良い項目とその具体的な更新例を3つ提案してください。' \
+            'その際、必ず 項目1: 更新例1, 項目2: 更新例2, 項目3: 更新例3 のように、JSON形式で回答してください。' \
+            'なお、更新例はなるべく元のリーンキャンバスの文体に合わせてください。'
+    response2 = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request2},
+        ],
+    )
+    output_content2 = response2.choices[0].message.content.strip() # 更新提案のテキスト
+    print(f"更新提案: {output_content2}")
+
+    is_success = insert_research_result(edit_id, user_id, output_content1)
+    return {"success": is_success, "research_result": output_content1, "update_proposal": output_content2}
+
+@app.post("/projects/{project_id}/interview-preparation")
+def interview_preparation(project_id: int, sel: str):
+    edit_id = get_latest_edit_id(project_id)
+    details = get_canvas_details(edit_id)
+    current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
+
+    if sel == 'CPF':
+        purpose = 'CustomerとProblemの整合性、すなわち想定している顧客が本当にその課題を持っているか、その課題が本当に痛みを伴うものか'
+    elif sel == 'PSF':
+        purpose = 'ProblemとSolutionの整合性、すなわち提案するソリューションが本当にその課題を解決できるか、顧客がそのソリューションを求めるか'
+
+    request1 = '現在リーンキャンバスをもとに新規事業開発を検討しています。' \
+            '開発の概要は以下の通りです。' + str(current_canvas) + \
+            'ここで、' + purpose + 'を確認するためのインタビューを行いたいと考えています。' \
+            '理想的なインタビュー対象者を、余計な文章を挿入せずに、必ず ' \
+            '属性: [属性の箇条書きリスト], 特徴: [特徴の箇条書きリスト], 選定基準: [選定基準の箇条書きリスト] のように、JSON形式で回答してください。'
+    response1 = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request1},
+        ],
+    )
+    output_content1 = response1.choices[0].message.content.strip() # インタビュイーのテキスト
+
+    request2 = '現在リーンキャンバスをもとに新規事業開発を検討しています。' \
+            '開発の概要は以下の通りです。' + str(current_canvas) + \
+            'ここで、' + purpose + 'を確認するため、以下のような人物にインタビューを行いたいと考えています。' \
+            + str(output_content1) + \
+            'およそ1時間のインタビュー時間で、この人物に対して効果的に仮説検証を行うための質問案を、余計な文章を挿入せずに、必ず' \
+            '顧客の基本情報: [基本情報に関する質問案の箇条書きリスト], 現在の課題と痛み: [現在の課題と痛みに関する質問案の箇条書きリスト], ' \
+            '代替手段の利用状況: [代替手段の利用状況に関する質問案の箇条書きリスト], 価値観と意思決定要因: [価値観と意思決定要因に関する質問案の箇条書きリスト]' \
+            'のように、JSON形式で回答してください。'
+    response2 = client.chat.completions.create(
+        model='gpt-4o', 
+        messages=[
+            {'role': 'user', "content": request2},
+        ],
+    )
+    output_content2 = response2.choices[0].message.content.strip() # 質問案のテキスト
+
+    return {"interviewee": output_content1, "questions": output_content2}
+
+@app.get("/projects/{project_id}/interview-notes")
+def get_interview_notes(project_id: int):
+    result = get_all_interview_notes(project_id)
+    return result
 
 # === RAG機能用エンドポイント ===
 
