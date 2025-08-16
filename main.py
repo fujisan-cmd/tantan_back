@@ -24,12 +24,15 @@ from db_operations import (
     insert_research_result, insert_interview_notes, get_all_interview_notes,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
+    create_document_record,  # 追加
+    delete_document_record,  # 追加
     # 整合性確認機能用追加
     ConsistencyCheckRequest, ConsistencyCheckResponse,
     # AI回答自動生成機能用追加
     AutoAnswerGenerationRequest, AutoAnswerGenerationResponse,
     # リーンキャンバス更新案生成機能用追加
-    CanvasUpdateRequest, CanvasUpdateResponse
+    CanvasUpdateRequest, CanvasUpdateResponse,
+    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id
 )
 
 # RAG機能用サービス
@@ -206,6 +209,14 @@ def get_current_user_info(current_user_id: int = Depends(get_current_user)):
     
     return UserResponse(**user_info)
 
+@app.get("/api/users/{user_id}")
+def get_user_email(user_id: int):
+    """ユーザーIDからemailを取得"""
+    user_info = get_user_by_id(user_id)
+    if not user_info:
+        raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+    return {"user_id": user_info["user_id"], "email": user_info["email"]}
+
 @app.get("/api/projects", response_model=List[ProjectResponse])
 def get_projects(current_user_id: int = Depends(get_current_user)):
     """ユーザーのプロジェクト一覧取得"""
@@ -260,7 +271,8 @@ def update_canvas(request: ProjectUpdateRequest):
             version = 0  # 初回の場合は0から開始
         print(f"最新の編集バージョン: {version}")
         
-        edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category="manual", update_comment=request.update_comment)
+        # update_categoryをリクエストから渡す
+        edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category=request.update_category, update_comment=request.update_comment)
         print(f"プロジェクトの編集履歴登録: {edit_id}")
         
         if edit_id == 0:
@@ -279,7 +291,7 @@ def update_canvas(request: ProjectUpdateRequest):
         raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
 
 @app.post("/projects/{project_id}/research")
-def execute_research(project_id: int, user_id: int):
+def execute_research(project_id: int, current_user_id: int = Depends(get_current_user)):
     edit_id = get_latest_edit_id(project_id)
     details = get_canvas_details(edit_id)
     current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
@@ -315,7 +327,7 @@ def execute_research(project_id: int, user_id: int):
     output_content2 = response2.choices[0].message.content.strip() # 更新提案のテキスト
     print(f"更新提案: {output_content2}")
 
-    is_success = insert_research_result(edit_id, user_id, output_content1)
+    is_success = insert_research_result(edit_id, current_user_id, output_content1)
     return {"success": is_success, "research_result": output_content1, "update_proposal": output_content2}
 
 @app.post("/projects/{project_id}/interview-preparation")
@@ -391,32 +403,41 @@ async def upload_and_process_file(
         if not extraction_result["success"]:
             raise HTTPException(status_code=400, detail=extraction_result["message"])
         
-        # 2. ドキュメント記録をDBに作成（一時的にコメントアウトされた関数を使用予定）
-        # document_id = create_document_record(
-        #     user_id=current_user_id,
-        #     project_id=project_id,
-        #     file_name=extraction_result["file_info"]["original_filename"],
-        #     file_type=extraction_result["file_info"]["file_type"],
-        #     file_size=extraction_result["file_info"]["file_size"],
-        #     source_type=source_type
-        # )
+        # 2. ドキュメント記録をDBに作成
+        document_id = create_document_record(
+            user_id=current_user_id,
+            project_id=project_id,
+            file_name=extraction_result["file_info"]["original_filename"],
+            file_type=extraction_result["file_info"]["file_type"],
+            file_size=extraction_result["file_info"]["file_size"],
+            source_type=source_type
+        )
+        
+        if not document_id:
+            raise HTTPException(status_code=500, detail="ドキュメント記録の作成に失敗しました")
         
         # 3. RAG処理（テキスト分割・ベクトル化・保存）
-        # rag_result = await rag_service.process_text_for_rag(
-        #     document_id=document_id,
-        #     text_content=extraction_result["extracted_text"]
-        # )
+        rag_result = await rag_service.process_text_for_rag(
+            document_id=document_id,
+            text_content=extraction_result["extracted_text"]
+        )
+        
+        if not rag_result["success"]:
+            logger.error(f"RAG処理失敗: {rag_result.get('message', 'Unknown error')}")
+            # ドキュメント記録は残す（失敗状態で）
         
         # 4. 処理状況更新
-        # update_document_processing_status(document_id, 'completed')
+        # update_document_processing_status(document_id, 'completed' if rag_result["success"] else 'failed')
         
-        # 一時的なレスポンス（データベーススキーマ適用前）
+        # 処理完了レスポンス
         logger.info(f"ファイル処理完了: {file.filename}")
         return {
-            "message": "ファイル処理が完了しました",
+            "message": "ファイル処理とRAG処理が完了しました",
+            "document_id": document_id,
             "file_info": extraction_result["file_info"],
             "text_length": len(extraction_result["extracted_text"]),
-            "text_preview": extraction_result["extracted_text"][:200] + "..."
+            "text_preview": extraction_result["extracted_text"][:200] + "...",
+            "rag_processing": rag_result if 'rag_result' in locals() else {"success": False, "message": "RAG処理がスキップされました"}
         }
         
     except Exception as e:
@@ -505,12 +526,15 @@ async def delete_document(
 ):
     """文書を削除（ベクトルデータも含む）"""
     try:
-        # success = delete_document_record(document_id, current_user_id)
-        # 一時的なレスポンス（データベーススキーマ適用前）
-        return {
-            "message": "文書削除機能は準備中です",
-            "document_id": document_id
-        }
+        success = delete_document_record(document_id, current_user_id)
+        
+        if success:
+            return {
+                "message": "文書を削除しました",
+                "document_id": document_id
+            }
+        else:
+            raise HTTPException(status_code=404, detail="文書が見つかりません")
         
     except Exception as e:
         logger.error(f"文書削除エラー: {e}")
@@ -696,6 +720,66 @@ async def generate_canvas_update(
     except Exception as e:
         logger.error(f"リーンキャンバス更新案生成エラー: {e}")
         raise HTTPException(status_code=500, detail="リーンキャンバス更新案生成の処理に失敗しました")
+
+@app.post("/projects/{project_id}/interview-to-canvas", response_model=InterviewToCanvasResponse)
+async def interview_to_canvas(
+    project_id: int,
+    request: InterviewToCanvasRequest,
+    current_user_id: int = Depends(get_current_user)
+):
+    """
+    インタビューメモをもとに現行キャンバス＋提案キャンバスを返す（差分は返さない）
+    """
+    try:
+        # プロジェクト存在・権限チェック
+        project = get_project_by_id(project_id)
+        if not project:
+            return InterviewToCanvasResponse(success=False, message="プロジェクトが見つかりません")
+        if project["user_id"] != current_user_id:
+            return InterviewToCanvasResponse(success=False, message="他のユーザーのプロジェクトです")
+
+        # インタビューメモ取得
+        note = get_interview_note_by_id(request.note_id)
+        if not note:
+            return InterviewToCanvasResponse(success=False, message="インタビューメモが見つかりません")
+
+        # 現行キャンバス取得
+        latest_edit_id = get_latest_edit_id(project_id)
+        if not latest_edit_id:
+            return InterviewToCanvasResponse(success=False, message="現行キャンバスが見つかりません")
+        latest_canvas_details = get_canvas_details(latest_edit_id)
+        if not latest_canvas_details:
+            return InterviewToCanvasResponse(success=False, message="キャンバス詳細が見つかりません")
+
+        # LLM呼び出し用にuser_answers形式へ変換（仮: interview_noteを1件だけ渡す）
+        user_answers = [
+            {
+                "question": f"インタビューメモ: {note['interviewee_name']} ({note['interview_date']})",
+                "answer": note["interview_note"],
+                "perspective": str(note["interview_type"])
+            }
+        ]
+        result = await canvas_update_service.generate_canvas_update(
+            project_name=project["project_name"],
+            canvas_data=latest_canvas_details,
+            user_answers=user_answers
+        )
+        if not result["success"]:
+            return InterviewToCanvasResponse(success=False, message=result.get("message", "LLM生成に失敗"))
+
+        # 現行キャンバスのfield部分を抽出
+        current_canvas = next(iter(latest_canvas_details.values())) if isinstance(latest_canvas_details, dict) else latest_canvas_details
+        proposed_canvas = result["updated_canvas"]
+
+        return InterviewToCanvasResponse(
+            success=True,
+            current_canvas=current_canvas,
+            proposed_canvas=proposed_canvas,
+            message="提案キャンバスを生成しました"
+        )
+    except Exception as e:
+        logger.error(f"interview-to-canvasエラー: {e}")
+        return InterviewToCanvasResponse(success=False, message=f"サーバーエラー: {str(e)}")
 
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")

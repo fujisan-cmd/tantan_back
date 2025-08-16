@@ -2,6 +2,7 @@
 import os
 import tempfile
 import magic
+import io
 from typing import Dict, Any, BinaryIO
 from fastapi import UploadFile, HTTPException
 from pathlib import Path
@@ -14,6 +15,13 @@ import openpyxl
 from PIL import Image
 from pptx import Presentation
 import csv
+
+# PDF処理の複数ライブラリ対応
+import pdfplumber
+import fitz  # PyMuPDF
+import pytesseract
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,25 @@ class FileService:
             "image/jpeg": "jpg",
             "image/gif": "gif"
         }
+        
+        # Tesseract OCR設定（Windowsの場合）
+        tesseract_paths = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            "tesseract"  # PATH環境変数に設定されている場合
+        ]
+        
+        for path in tesseract_paths:
+            try:
+                pytesseract.pytesseract.tesseract_cmd = path
+                # テスト実行してパスが有効か確認
+                pytesseract.get_tesseract_version()
+                logger.info(f"Tesseract OCRが見つかりました: {path}")
+                break
+            except Exception:
+                continue
+        else:
+            logger.warning("Tesseract OCRが見つかりません。OCR機能は無効になります。")
     
     async def validate_file(self, file: UploadFile) -> Dict[str, Any]:
         """ファイルのバリデーション"""
@@ -91,6 +118,7 @@ class FileService:
     async def process_uploaded_file_and_extract_text(self, file: UploadFile) -> Dict[str, Any]:
         """アップロードファイルを一時処理してテキスト抽出（元ファイルは削除）"""
         temp_file_path = None
+        print(f"[DEBUG] ファイル処理開始: {file.filename}")
         try:
             # ファイルバリデーション
             validation_result = await self.validate_file(file)
@@ -168,17 +196,162 @@ class FileService:
             return ""
     
     async def _extract_from_pdf(self, file_path: str) -> str:
-        """PDFからテキストを抽出"""
-        text = ""
+        """PDFからテキスト抽出（複数ライブラリ + OCR対応）"""
+        logger.info(f"PDF分析開始 - ファイル: {file_path}")
+        print(f"[DEBUG] PDF分析開始 - ファイル: {file_path}")
+        
+        # 複数の方法でテキスト抽出を試行
+        methods = [
+            ("PyPDF2", self._extract_with_pypdf2),
+            ("pdfplumber", self._extract_with_pdfplumber),
+            ("PyMuPDF", self._extract_with_pymupdf)
+        ]
+        
+        # OCRが利用可能な場合のみ追加
         try:
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page_num, page in enumerate(pdf_reader.pages):
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"[ページ {page_num + 1}]\n{page_text}\n\n"
-        except Exception as e:
-            logger.error(f"PDF抽出エラー: {e}")
+            pytesseract.get_tesseract_version()
+            methods.append(("OCR (Tesseract)", self._extract_with_ocr))
+            logger.info("OCR機能が利用可能です")
+        except Exception:
+            logger.info("OCR機能は利用できません（テキストベースPDF抽出のみ）")
+        
+        for method_name, extract_func in methods:
+            try:
+                logger.info(f"PDF抽出方法: {method_name} を試行中...")
+                print(f"[DEBUG] PDF抽出方法: {method_name} を試行中...")
+                
+                text = await extract_func(file_path)
+                
+                if text and len(text.strip()) > 50:  # 十分なテキストが抽出された
+                    logger.info(f"PDF抽出成功: {method_name} で {len(text)}文字抽出")
+                    return text
+                elif text and len(text.strip()) > 0:
+                    logger.warning(f"PDF抽出部分成功: {method_name} で {len(text)}文字抽出（少量）")
+                    # 少量でも保存しておく（最終手段として使用）
+                    last_resort_text = text
+                else:
+                    logger.warning(f"PDF抽出失敗: {method_name} でテキストが抽出されませんでした")
+                    
+            except Exception as e:
+                logger.error(f"PDF抽出エラー ({method_name}): {type(e).__name__}: {e}")
+                continue
+        
+        # すべての方法が失敗した場合、少量でも抽出されたテキストがあれば返す
+        if 'last_resort_text' in locals():
+            logger.info(f"最終手段として少量テキストを返却: {len(last_resort_text)}文字")
+            return last_resort_text
+        
+        logger.error("PDF抽出完全失敗: すべての方法でテキスト抽出に失敗しました")
+        return ""
+
+    async def _extract_with_pypdf2(self, file_path: str) -> str:
+        """PyPDF2を使用したPDF抽出"""
+        text = ""
+        with open(file_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            
+            total_pages = len(pdf_reader.pages)
+            is_encrypted = pdf_reader.is_encrypted
+            
+            logger.info(f"PyPDF2: ページ数={total_pages}, 暗号化={is_encrypted}")
+            
+            if is_encrypted:
+                logger.warning("PyPDF2: 暗号化PDFです")
+                return ""
+            
+            for page_num, page in enumerate(pdf_reader.pages):
+                page_text = page.extract_text()
+                if page_text and page_text.strip():
+                    text += f"[ページ {page_num + 1}]\n{page_text}\n\n"
+        
+        return text
+    
+    async def _extract_with_pdfplumber(self, file_path: str) -> str:
+        """pdfplumberを使用したPDF抽出（表やレイアウト対応）"""
+        text = ""
+        with pdfplumber.open(file_path) as pdf:
+            logger.info(f"pdfplumber: ページ数={len(pdf.pages)}")
+            
+            for page_num, page in enumerate(pdf.pages):
+                page_text = page.extract_text()
+                if page_text and page_text.strip():
+                    text += f"[ページ {page_num + 1}]\n{page_text}\n\n"
+                
+                # 表も抽出を試行
+                tables = page.extract_tables()
+                if tables:
+                    for table_num, table in enumerate(tables):
+                        text += f"[ページ {page_num + 1} - 表 {table_num + 1}]\n"
+                        for row in table:
+                            if row:
+                                text += " | ".join([cell or "" for cell in row]) + "\n"
+                        text += "\n"
+        
+        return text
+    
+    async def _extract_with_pymupdf(self, file_path: str) -> str:
+        """PyMuPDFを使用したPDF抽出"""
+        text = ""
+        doc = fitz.open(file_path)
+        
+        logger.info(f"PyMuPDF: ページ数={len(doc)}")
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_text = page.get_text()
+            
+            if page_text and page_text.strip():
+                text += f"[ページ {page_num + 1}]\n{page_text}\n\n"
+        
+        doc.close()
+        return text
+    
+    async def _extract_with_ocr(self, file_path: str) -> str:
+        """OCRを使用したPDF抽出（画像ベースPDF対応）"""
+        try:
+            # Tesseractが利用可能か確認
+            pytesseract.get_tesseract_version()
+        except Exception:
+            logger.warning("OCR: Tesseract OCRが利用できません")
+            return ""
+        
+        text = ""
+        doc = fitz.open(file_path)
+        
+        logger.info(f"OCR: ページ数={len(doc)} のOCR処理を開始")
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            
+            # ページを画像に変換
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2倍解像度
+            img_data = pix.tobytes("png")
+            
+            # PILで画像を読み込み
+            image = Image.open(io.BytesIO(img_data))
+            
+            # OpenCVで前処理（コントラスト改善）
+            img_array = np.array(image)
+            if len(img_array.shape) == 3:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            
+            # コントラスト改善
+            img_array = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+            
+            # OCRでテキスト抽出
+            page_text = pytesseract.image_to_string(
+                Image.fromarray(img_array),
+                lang='jpn+eng',  # 日本語と英語
+                config='--psm 6'  # 一様なテキストブロック
+            )
+            
+            if page_text and page_text.strip():
+                text += f"[ページ {page_num + 1} - OCR]\n{page_text}\n\n"
+                logger.info(f"OCR: ページ {page_num + 1} で {len(page_text)}文字抽出")
+            else:
+                logger.warning(f"OCR: ページ {page_num + 1} でテキストが抽出されませんでした")
+        
+        doc.close()
         return text
     
     async def _extract_from_docx(self, file_path: str) -> str:

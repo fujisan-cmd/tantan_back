@@ -31,6 +31,8 @@ class Role(Enum):
 class InterviewType(Enum):
     hypothesis_testing = 'hypothesis_testing'
     deep_dive = 'deep_dive'
+    CPF = 'CPF'
+    PSF = 'PSF'
 
 class SourceType(Enum):
     customer = 'customer'
@@ -210,6 +212,16 @@ class ProjectUpdateRequest(BaseModel):
     user_id: int
     update_comment: str
     field: Dict[str, Any]
+    update_category: str  # ←追加
+
+class InterviewToCanvasRequest(BaseModel):
+    note_id: int
+
+class InterviewToCanvasResponse(BaseModel):
+    success: bool
+    current_canvas: Optional[Dict[str, Any]] = None
+    proposed_canvas: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
 
 class InterviewNotesRequest(BaseModel):
     edit_id: Optional[int] = None
@@ -653,12 +665,15 @@ def insert_interview_notes(edit_id: Optional[int], project_id: int, user_id: int
 def get_all_interview_notes(project_id: int):
     db = SessionLocal()
     query = select(
+        InterviewNote.note_id,  # 追加
         InterviewNote.interviewee_name,
         InterviewNote.interview_date,
         InterviewNote.user_id,
         InterviewNote.edit_id,
         EditHistory.version,
         User.email,
+        InterviewNote.interview_note,
+        InterviewNote.interview_type,
     )\
     .join(EditHistory, InterviewNote.edit_id == EditHistory.edit_id, isouter=True)\
     .join(User, InterviewNote.user_id == User.user_id, isouter=True)\
@@ -668,22 +683,48 @@ def get_all_interview_notes(project_id: int):
             rows = db.execute(query).all()
             if not rows:
                 return None
-            
             result = []
-            for name, idate, user_id, edit_id, version, email in rows:
+            for note_id, name, idate, user_id, edit_id, version, email, interview_note, interview_type in rows:
                 result.append({
+                    "note_id": note_id,  # 追加
                     "interviewee_name": name,
                     "interview_date": idate,
                     "user_id": user_id,
                     "edit_id": edit_id,
                     "version": version,
                     "email": email,
+                    "interview_note": interview_note,
+                    "interview_type": interview_type,
                 })
             return result
     except Exception as e:
         db.rollback()
         logger.error(f"インタビューノート取得エラー: {e}")
         return False
+    finally:
+        db.close()
+
+def get_interview_note_by_id(note_id: int) -> Optional[Dict[str, Any]]:
+    """指定されたnote_idのインタビューメモを1件取得"""
+    db = SessionLocal()
+    try:
+        note = db.query(InterviewNote).filter(InterviewNote.note_id == note_id).first()
+        if note:
+            return {
+                "note_id": note.note_id,
+                "edit_id": note.edit_id,
+                "project_id": note.project_id,
+                "user_id": note.user_id,
+                "interviewee_name": note.interviewee_name,
+                "interview_date": note.interview_date,
+                "interview_type": note.interview_type,
+                "interview_note": note.interview_note,
+                "created_at": note.created_at,
+            }
+        return None
+    except Exception as e:
+        logger.error(f"インタビューメモ取得エラー: {e}")
+        return None
     finally:
         db.close()
 
@@ -708,18 +749,18 @@ def get_all_interview_notes(project_id: int):
 #     user = relationship("User", backref="documents")
 #     project = relationship("Project", backref="documents")
 
-# class DocumentChunk(Base):
-#     """ドキュメントチャンクテーブル（RAG用ベクトル保存）"""
-#     __tablename__ = 'document_chunks'
-# 
-#     chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-#     document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id'), nullable=False)
-#     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
-#     chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
-#     embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
-#     metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-# 
-#     document = relationship("Document", backref="chunks")
+class DocumentChunk(Base):
+    """ドキュメントチャンクテーブル（RAG用ベクトル保存）"""
+    __tablename__ = 'document_chunks'
+
+    chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id', ondelete='CASCADE'), nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
+    chunk_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    document = relationship("Document", backref="chunks")
 
 # RAG機能用Pydanticモデル
 class DocumentUploadResponse(BaseModel):
@@ -806,34 +847,34 @@ class CanvasUpdateResponse(BaseModel):
         """エラーメッセージ（エラー時のみ）"""
         return None if self.success else "エラーが発生しました"
 
-# RAG機能用CRUD関数（データベーススキーマ適用前のため一時的にコメントアウト）
-# def create_document_record(user_id: int, project_id: int, file_name: str, 
-#                           file_type: str, file_size: int, source_type: str) -> Optional[int]:
-#     """ドキュメント記録を作成"""
-#     db = SessionLocal()
-#     try:
-#         new_doc = Document(
-#             user_id=user_id,
-#             project_id=project_id,
-#             file_name=file_name,
-#             file_type=file_type,
-#             file_size=file_size,
-#             source_type=source_type,
-#             processing_status='pending'
-#         )
-#         db.add(new_doc)
-#         db.commit()
-#         db.refresh(new_doc)
-#         
-#         logger.info(f"ドキュメント記録作成成功: {file_name} (ID: {new_doc.document_id})")
-#         return new_doc.document_id
-#         
-#     except Exception as e:
-#         db.rollback()
-#         logger.error(f"ドキュメント記録作成エラー: {e}")
-#         return None
-#     finally:
-#         db.close()
+# RAG機能用CRUD関数
+def create_document_record(user_id: int, project_id: int, file_name: str, 
+                          file_type: str, file_size: int, source_type: str) -> Optional[int]:
+    """ドキュメント記録を作成"""
+    db = SessionLocal()
+    try:
+        new_doc = Document(
+            user_id=user_id,
+            project_id=project_id,
+            file_name=file_name,
+            file_type=file_type,
+            file_size=file_size,
+            source_type=source_type,
+            processing_status='pending'
+        )
+        db.add(new_doc)
+        db.commit()
+        db.refresh(new_doc)
+        
+        logger.info(f"ドキュメント記録作成成功: {file_name} (ID: {new_doc.document_id})")
+        return new_doc.document_id
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"ドキュメント記録作成エラー: {e}")
+        return None
+    finally:
+        db.close()
 
 # def update_document_processing_status(document_id: int, status: str) -> bool:
 #     """ドキュメント処理状況を更新"""
@@ -891,28 +932,39 @@ class CanvasUpdateResponse(BaseModel):
 #     finally:
 #         db.close()
 
-# def delete_document_record(document_id: int, user_id: int) -> bool:
-#     """ドキュメント記録を削除"""
-#     db = SessionLocal()
-#     try:
-#         doc = db.query(Document).filter(
-#             Document.document_id == document_id,
-#             Document.user_id == user_id
-#         ).first()
-#         
-#         if doc:
-#             # チャンクも一緒に削除される（CASCADE）
-#             db.delete(doc)
-#             db.commit()
-#             logger.info(f"ドキュメント削除成功: {document_id}")
-#             return True
-#         return False
-#         
-#     except Exception as e:
-#         db.rollback()
-#         logger.error(f"ドキュメント削除エラー: {e}")
-#         return False
-#     finally:
-#         db.close()
+def delete_document_record(document_id: int, user_id: int) -> bool:
+    """ドキュメント記録を削除"""
+    db = SessionLocal()
+    try:
+        logger.info(f"ドキュメント削除開始: document_id={document_id}, user_id={user_id}")
+        
+        doc = db.query(Document).filter(
+            Document.document_id == document_id
+        ).first()
+        
+        if doc:
+            logger.info(f"削除対象ドキュメント見つかりました: {doc.file_name}")
+            
+            # まず関連するチャンクを削除
+            chunks_deleted = db.query(DocumentChunk).filter(
+                DocumentChunk.document_id == document_id
+            ).delete()
+            logger.info(f"削除したチャンク数: {chunks_deleted}")
+            
+            # 次にドキュメント本体を削除
+            db.delete(doc)
+            db.commit()
+            logger.info(f"ドキュメント削除成功: {document_id}")
+            return True
+        else:
+            logger.warning(f"削除対象ドキュメントが見つかりません: document_id={document_id}, user_id={user_id}")
+            return False
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"ドキュメント削除エラー: {e}")
+        return False
+    finally:
+        db.close()
 
 # === RAG機能用追加 END ===
