@@ -31,7 +31,8 @@ from db_operations import (
     # AI回答自動生成機能用追加
     AutoAnswerGenerationRequest, AutoAnswerGenerationResponse,
     # リーンキャンバス更新案生成機能用追加
-    CanvasUpdateRequest, CanvasUpdateResponse
+    CanvasUpdateRequest, CanvasUpdateResponse,
+    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id
 )
 
 # RAG機能用サービス
@@ -270,7 +271,8 @@ def update_canvas(request: ProjectUpdateRequest):
             version = 0  # 初回の場合は0から開始
         print(f"最新の編集バージョン: {version}")
         
-        edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category="manual", update_comment=request.update_comment)
+        # update_categoryをリクエストから渡す
+        edit_id = insert_edit_history(request.project_id, version + 1, user_id=request.user_id, update_category=request.update_category, update_comment=request.update_comment)
         print(f"プロジェクトの編集履歴登録: {edit_id}")
         
         if edit_id == 0:
@@ -711,6 +713,66 @@ async def generate_canvas_update(
     except Exception as e:
         logger.error(f"リーンキャンバス更新案生成エラー: {e}")
         raise HTTPException(status_code=500, detail="リーンキャンバス更新案生成の処理に失敗しました")
+
+@app.post("/projects/{project_id}/interview-to-canvas", response_model=InterviewToCanvasResponse)
+async def interview_to_canvas(
+    project_id: int,
+    request: InterviewToCanvasRequest,
+    current_user_id: int = Depends(get_current_user)
+):
+    """
+    インタビューメモをもとに現行キャンバス＋提案キャンバスを返す（差分は返さない）
+    """
+    try:
+        # プロジェクト存在・権限チェック
+        project = get_project_by_id(project_id)
+        if not project:
+            return InterviewToCanvasResponse(success=False, message="プロジェクトが見つかりません")
+        if project["user_id"] != current_user_id:
+            return InterviewToCanvasResponse(success=False, message="他のユーザーのプロジェクトです")
+
+        # インタビューメモ取得
+        note = get_interview_note_by_id(request.note_id)
+        if not note:
+            return InterviewToCanvasResponse(success=False, message="インタビューメモが見つかりません")
+
+        # 現行キャンバス取得
+        latest_edit_id = get_latest_edit_id(project_id)
+        if not latest_edit_id:
+            return InterviewToCanvasResponse(success=False, message="現行キャンバスが見つかりません")
+        latest_canvas_details = get_canvas_details(latest_edit_id)
+        if not latest_canvas_details:
+            return InterviewToCanvasResponse(success=False, message="キャンバス詳細が見つかりません")
+
+        # LLM呼び出し用にuser_answers形式へ変換（仮: interview_noteを1件だけ渡す）
+        user_answers = [
+            {
+                "question": f"インタビューメモ: {note['interviewee_name']} ({note['interview_date']})",
+                "answer": note["interview_note"],
+                "perspective": str(note["interview_type"])
+            }
+        ]
+        result = await canvas_update_service.generate_canvas_update(
+            project_name=project["project_name"],
+            canvas_data=latest_canvas_details,
+            user_answers=user_answers
+        )
+        if not result["success"]:
+            return InterviewToCanvasResponse(success=False, message=result.get("message", "LLM生成に失敗"))
+
+        # 現行キャンバスのfield部分を抽出
+        current_canvas = next(iter(latest_canvas_details.values())) if isinstance(latest_canvas_details, dict) else latest_canvas_details
+        proposed_canvas = result["updated_canvas"]
+
+        return InterviewToCanvasResponse(
+            success=True,
+            current_canvas=current_canvas,
+            proposed_canvas=proposed_canvas,
+            message="提案キャンバスを生成しました"
+        )
+    except Exception as e:
+        logger.error(f"interview-to-canvasエラー: {e}")
+        return InterviewToCanvasResponse(success=False, message=f"サーバーエラー: {str(e)}")
 
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")
