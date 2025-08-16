@@ -673,7 +673,7 @@ class DocumentChunk(Base):
     __tablename__ = 'document_chunks'
 
     chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id'), nullable=False)
+    document_id: Mapped[int] = mapped_column(Integer, ForeignKey('documents.document_id', ondelete='CASCADE'), nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_order: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pgvector型（文字列として扱う）
@@ -851,28 +851,39 @@ def create_document_record(user_id: int, project_id: int, file_name: str,
 #     finally:
 #         db.close()
 
-# def delete_document_record(document_id: int, user_id: int) -> bool:
-#     """ドキュメント記録を削除"""
-#     db = SessionLocal()
-#     try:
-#         doc = db.query(Document).filter(
-#             Document.document_id == document_id,
-#             Document.user_id == user_id
-#         ).first()
-#         
-#         if doc:
-#             # チャンクも一緒に削除される（CASCADE）
-#             db.delete(doc)
-#             db.commit()
-#             logger.info(f"ドキュメント削除成功: {document_id}")
-#             return True
-#         return False
-#         
-#     except Exception as e:
-#         db.rollback()
-#         logger.error(f"ドキュメント削除エラー: {e}")
-#         return False
-#     finally:
-#         db.close()
+def delete_document_record(document_id: int, user_id: int) -> bool:
+    """ドキュメント記録を削除"""
+    db = SessionLocal()
+    try:
+        logger.info(f"ドキュメント削除開始: document_id={document_id}, user_id={user_id}")
+        
+        doc = db.query(Document).filter(
+            Document.document_id == document_id
+        ).first()
+        
+        if doc:
+            logger.info(f"削除対象ドキュメント見つかりました: {doc.file_name}")
+            
+            # まず関連するチャンクを削除
+            chunks_deleted = db.query(DocumentChunk).filter(
+                DocumentChunk.document_id == document_id
+            ).delete()
+            logger.info(f"削除したチャンク数: {chunks_deleted}")
+            
+            # 次にドキュメント本体を削除
+            db.delete(doc)
+            db.commit()
+            logger.info(f"ドキュメント削除成功: {document_id}")
+            return True
+        else:
+            logger.warning(f"削除対象ドキュメントが見つかりません: document_id={document_id}, user_id={user_id}")
+            return False
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"ドキュメント削除エラー: {e}")
+        return False
+    finally:
+        db.close()
 
 # === RAG機能用追加 END ===
