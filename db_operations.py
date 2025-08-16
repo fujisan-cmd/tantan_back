@@ -212,6 +212,16 @@ class ProjectUpdateRequest(BaseModel):
     user_id: int
     update_comment: str
     field: Dict[str, Any]
+    update_category: str  # ←追加
+
+class InterviewToCanvasRequest(BaseModel):
+    note_id: int
+
+class InterviewToCanvasResponse(BaseModel):
+    success: bool
+    current_canvas: Optional[Dict[str, Any]] = None
+    proposed_canvas: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
 
 # === CRUD関数 ===
 
@@ -619,6 +629,7 @@ def insert_research_result(edit_id: int, user_id: int, result_text: str) -> bool
 def get_all_interview_notes(project_id: int):
     db = SessionLocal()
     query = select(
+        InterviewNote.note_id,  # 追加
         InterviewNote.interviewee_name,
         InterviewNote.interview_date,
         InterviewNote.user_id,
@@ -636,10 +647,10 @@ def get_all_interview_notes(project_id: int):
             rows = db.execute(query).all()
             if not rows:
                 return None
-            
             result = []
-            for name, idate, user_id, edit_id, version, email, interview_note, interview_type in rows:
+            for note_id, name, idate, user_id, edit_id, version, email, interview_note, interview_type in rows:
                 result.append({
+                    "note_id": note_id,  # 追加
                     "interviewee_name": name,
                     "interview_date": idate,
                     "user_id": user_id,
@@ -650,6 +661,30 @@ def get_all_interview_notes(project_id: int):
                     "interview_type": interview_type,
                 })
             return result
+    finally:
+        db.close()
+
+def get_interview_note_by_id(note_id: int) -> Optional[Dict[str, Any]]:
+    """指定されたnote_idのインタビューメモを1件取得"""
+    db = SessionLocal()
+    try:
+        note = db.query(InterviewNote).filter(InterviewNote.note_id == note_id).first()
+        if note:
+            return {
+                "note_id": note.note_id,
+                "edit_id": note.edit_id,
+                "project_id": note.project_id,
+                "user_id": note.user_id,
+                "interviewee_name": note.interviewee_name,
+                "interview_date": note.interview_date,
+                "interview_type": note.interview_type,
+                "interview_note": note.interview_note,
+                "created_at": note.created_at,
+            }
+        return None
+    except Exception as e:
+        logger.error(f"インタビューメモ取得エラー: {e}")
+        return None
     finally:
         db.close()
 
