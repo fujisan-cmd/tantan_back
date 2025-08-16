@@ -31,6 +31,8 @@ class Role(Enum):
 class InterviewType(Enum):
     hypothesis_testing = 'hypothesis_testing'
     deep_dive = 'deep_dive'
+    CPF = 'CPF'
+    PSF = 'PSF'
 
 class SourceType(Enum):
     customer = 'customer'
@@ -623,6 +625,8 @@ def get_all_interview_notes(project_id: int):
         InterviewNote.edit_id,
         EditHistory.version,
         User.email,
+        InterviewNote.interview_note,
+        InterviewNote.interview_type,
     )\
     .join(EditHistory, InterviewNote.edit_id == EditHistory.edit_id, isouter=True)\
     .join(User, InterviewNote.user_id == User.user_id, isouter=True)\
@@ -634,7 +638,7 @@ def get_all_interview_notes(project_id: int):
                 return None
             
             result = []
-            for name, idate, user_id, edit_id, version, email in rows:
+            for name, idate, user_id, edit_id, version, email, interview_note, interview_type in rows:
                 result.append({
                     "interviewee_name": name,
                     "interview_date": idate,
@@ -642,6 +646,8 @@ def get_all_interview_notes(project_id: int):
                     "edit_id": edit_id,
                     "version": version,
                     "email": email,
+                    "interview_note": interview_note,
+                    "interview_type": interview_type,
                 })
             return result
     finally:

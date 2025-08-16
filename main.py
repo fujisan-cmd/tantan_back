@@ -207,6 +207,14 @@ def get_current_user_info(current_user_id: int = Depends(get_current_user)):
     
     return UserResponse(**user_info)
 
+@app.get("/api/users/{user_id}")
+def get_user_email(user_id: int):
+    """ユーザーIDからemailを取得"""
+    user_info = get_user_by_id(user_id)
+    if not user_info:
+        raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+    return {"user_id": user_info["user_id"], "email": user_info["email"]}
+
 @app.get("/api/projects", response_model=List[ProjectResponse])
 def get_projects(current_user_id: int = Depends(get_current_user)):
     """ユーザーのプロジェクト一覧取得"""
