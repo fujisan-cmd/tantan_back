@@ -196,7 +196,7 @@ class FileService:
             return ""
     
     async def _extract_from_pdf(self, file_path: str) -> str:
-        """PDFからテキストを抽出（複数ライブラリ + OCR対応）"""
+        """PDFからテキスト抽出（複数ライブラリ + OCR対応）"""
         logger.info(f"PDF分析開始 - ファイル: {file_path}")
         print(f"[DEBUG] PDF分析開始 - ファイル: {file_path}")
         
