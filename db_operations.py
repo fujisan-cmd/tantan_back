@@ -650,6 +650,43 @@ def insert_interview_notes(edit_id: Optional[int], project_id: int, user_id: int
     finally:
         db.close()
 
+def get_all_interview_notes(project_id: int):
+    db = SessionLocal()
+    query = select(
+        InterviewNote.interviewee_name,
+        InterviewNote.interview_date,
+        InterviewNote.user_id,
+        InterviewNote.edit_id,
+        EditHistory.version,
+        User.email,
+    )\
+    .join(EditHistory, InterviewNote.edit_id == EditHistory.edit_id, isouter=True)\
+    .join(User, InterviewNote.user_id == User.user_id, isouter=True)\
+    .filter(InterviewNote.project_id == project_id)
+    try:
+        with db.begin():
+            rows = db.execute(query).all()
+            if not rows:
+                return None
+            
+            result = []
+            for name, idate, user_id, edit_id, version, email in rows:
+                result.append({
+                    "interviewee_name": name,
+                    "interview_date": idate,
+                    "user_id": user_id,
+                    "edit_id": edit_id,
+                    "version": version,
+                    "email": email,
+                })
+            return result
+    except Exception as e:
+        db.rollback()
+        logger.error(f"インタビューノート取得エラー: {e}")
+        return False
+    finally:
+        db.close()
+
 # === RAG機能用追加 START ===
 # 注意: データベーススキーマ適用前のため一時的にコメントアウト
 

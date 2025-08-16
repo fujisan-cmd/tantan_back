@@ -21,7 +21,7 @@ from db_operations import (
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version, get_project_by_id,
     insert_project, insert_edit_history, insert_canvas_details, 
-    insert_research_result, insert_interview_notes,
+    insert_research_result, insert_interview_notes, get_all_interview_notes,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     # 整合性確認機能用追加
@@ -367,6 +367,10 @@ def save_interview_notes(request: InterviewNotesRequest):
         raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
         
     return {"success": True, "message": "インタビューメモが正常に登録されました"}
+@app.get("/projects/{project_id}/interview-notes")
+def get_interview_notes(project_id: int):
+    result = get_all_interview_notes(project_id)
+    return result
 
 # === RAG機能用エンドポイント ===
 
