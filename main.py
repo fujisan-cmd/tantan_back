@@ -16,12 +16,12 @@ client = OpenAI(api_key=api_key)
 # ローカルモジュールのインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
-    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI, ProjectUpdateRequest,
+    UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI, ProjectUpdateRequest, InterviewNotesRequest,
     create_user, authenticate_user, create_session, validate_session, 
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version, get_project_by_id,
     insert_project, insert_edit_history, insert_canvas_details, 
-    insert_research_result, get_all_interview_notes,
+    insert_research_result, insert_interview_notes, get_all_interview_notes,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
@@ -372,6 +372,13 @@ def interview_preparation(project_id: int, sel: str):
 
     return {"interviewee": output_content1, "questions": output_content2}
 
+@app.post("/projects/{project_id}/interview-notes")
+def save_interview_notes(request: InterviewNotesRequest):
+    result = insert_interview_notes(request.edit_id, request.project_id, request.user_id, request.interviewee_name, request.interview_date, request.interview_type, request.interview_note)
+    if not result:
+        raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
+        
+    return {"success": True, "message": "インタビューメモが正常に登録されました"}
 @app.get("/projects/{project_id}/interview-notes")
 def get_interview_notes(project_id: int):
     result = get_all_interview_notes(project_id)

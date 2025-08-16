@@ -223,6 +223,15 @@ class InterviewToCanvasResponse(BaseModel):
     proposed_canvas: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
 
+class InterviewNotesRequest(BaseModel):
+    edit_id: Optional[int] = None
+    project_id: int
+    user_id: int
+    interviewee_name: str
+    interview_date: date
+    interview_type: str
+    interview_note: str
+
 # === CRUD関数 ===
 
 def hash_password(password: str) -> str:
@@ -626,6 +635,33 @@ def insert_research_result(edit_id: int, user_id: int, result_text: str) -> bool
     finally:
         db.close()
 
+def insert_interview_notes(edit_id: Optional[int], project_id: int, user_id: int, interviewee_name: str, interview_date: date, interview_type: str, interview_note: str):
+    db = SessionLocal()
+    values = {
+        "project_id": project_id,
+        "user_id": user_id,
+        "interviewee_name": interviewee_name,
+        "interview_date": interview_date,
+        "interview_type": interview_type,
+        "interview_note": interview_note
+    }
+    if edit_id:
+        values["edit_id"] = edit_id
+    query = insert(InterviewNote).values(values)
+
+    try:
+        with db.begin():
+            result = db.execute(query)
+            note_id = result.inserted_primary_key[0]
+            logger.info(f"インタビューノート挿入成功: note_id={note_id}, project_id={project_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"インタビューノート挿入エラー: {e}")
+        return False
+    finally:
+        db.close()
+
 def get_all_interview_notes(project_id: int):
     db = SessionLocal()
     query = select(
@@ -661,6 +697,10 @@ def get_all_interview_notes(project_id: int):
                     "interview_type": interview_type,
                 })
             return result
+    except Exception as e:
+        db.rollback()
+        logger.error(f"インタビューノート取得エラー: {e}")
+        return False
     finally:
         db.close()
 
