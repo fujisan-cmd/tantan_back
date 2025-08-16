@@ -25,6 +25,7 @@ from db_operations import (
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
+    delete_document_record,  # 追加
     # 整合性確認機能用追加
     ConsistencyCheckRequest, ConsistencyCheckResponse,
     # AI回答自動生成機能用追加
@@ -207,6 +208,14 @@ def get_current_user_info(current_user_id: int = Depends(get_current_user)):
     
     return UserResponse(**user_info)
 
+@app.get("/api/users/{user_id}")
+def get_user_email(user_id: int):
+    """ユーザーIDからemailを取得"""
+    user_info = get_user_by_id(user_id)
+    if not user_info:
+        raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+    return {"user_id": user_info["user_id"], "email": user_info["email"]}
+
 @app.get("/api/projects", response_model=List[ProjectResponse])
 def get_projects(current_user_id: int = Depends(get_current_user)):
     """ユーザーのプロジェクト一覧取得"""
@@ -280,7 +289,7 @@ def update_canvas(request: ProjectUpdateRequest):
         raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
 
 @app.post("/projects/{project_id}/research")
-def execute_research(project_id: int, user_id: int):
+def execute_research(project_id: int, current_user_id: int = Depends(get_current_user)):
     edit_id = get_latest_edit_id(project_id)
     details = get_canvas_details(edit_id)
     current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
@@ -316,7 +325,7 @@ def execute_research(project_id: int, user_id: int):
     output_content2 = response2.choices[0].message.content.strip() # 更新提案のテキスト
     print(f"更新提案: {output_content2}")
 
-    is_success = insert_research_result(edit_id, user_id, output_content1)
+    is_success = insert_research_result(edit_id, current_user_id, output_content1)
     return {"success": is_success, "research_result": output_content1, "update_proposal": output_content2}
 
 @app.post("/projects/{project_id}/interview-preparation")
@@ -508,12 +517,15 @@ async def delete_document(
 ):
     """文書を削除（ベクトルデータも含む）"""
     try:
-        # success = delete_document_record(document_id, current_user_id)
-        # 一時的なレスポンス（データベーススキーマ適用前）
-        return {
-            "message": "文書削除機能は準備中です",
-            "document_id": document_id
-        }
+        success = delete_document_record(document_id, current_user_id)
+        
+        if success:
+            return {
+                "message": "文書を削除しました",
+                "document_id": document_id
+            }
+        else:
+            raise HTTPException(status_code=404, detail="文書が見つかりません")
         
     except Exception as e:
         logger.error(f"文書削除エラー: {e}")
