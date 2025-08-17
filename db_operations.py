@@ -727,6 +727,24 @@ def get_interview_note_by_id(note_id: int) -> Optional[Dict[str, Any]]:
         return None
     finally:
         db.close()
+    
+def delete_one_note(note_id: int) -> bool:
+    db = SessionLocal()
+    query = delete(InterviewNote).where(InterviewNote.note_id == note_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            if result.rowcount == 0:
+                logger.warning(f"インタビューノート削除失敗: note_id={note_id} は存在しません")
+                return False
+            logger.info(f"インタビューノート削除成功: note_id={note_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"インタビューノート削除エラー: {e}")
+        return False
+    finally:
+        db.close()
 
 # === RAG機能用追加 START ===
 # 注意: データベーススキーマ適用前のため一時的にコメントアウト
