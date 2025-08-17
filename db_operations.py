@@ -635,6 +635,21 @@ def insert_research_result(edit_id: int, user_id: int, result_text: str) -> bool
     finally:
         db.close()
 
+def remove_research_result(research_id: int):
+    db = SessionLocal()
+    query = delete(ResearchResult).where(ResearchResult.research_id == research_id)
+    try:
+        with db.begin():
+            db.execute(query)
+            logger.info(f"リサーチ結果削除成功: research_id={research_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"リサーチ結果削除エラー: {e}")
+        return False
+    finally:
+        db.close()
+
 def insert_interview_notes(edit_id: Optional[int], project_id: int, user_id: int, interviewee_name: str, interview_date: date, interview_type: str, interview_note: str):
     db = SessionLocal()
     values = {
