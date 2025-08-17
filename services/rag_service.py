@@ -265,48 +265,59 @@ class RAGService:
     
     async def _vector_search(self, query_embedding: List[float], limit: int = 10, 
                           project_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """ベクトル類似検索を実行"""
+        """ベクトル類似検索を実行（psycopg2を直接使用）"""
         db = SessionLocal()
         try:
-            # ベースクエリ
-            base_query = """
-                SELECT dc.chunk_id, dc.document_id, dc.chunk_text, dc.metadata,
-                       d.file_name, d.source_type, d.project_id,
-                       (dc.embedding <-> %s::vector) as distance
-                FROM document_chunks dc
-                JOIN documents d ON dc.document_id = d.document_id
-            """
+            # SQLAlchemy接続から生のpsycopg2接続を取得
+            connection = db.get_bind().raw_connection()
+            cursor = connection.cursor()
             
-            params = [query_embedding]
+            try:
+                # ベースクエリ（pgvectorの正しい構文を使用）
+                base_query = """
+                    SELECT dc.chunk_id, dc.document_id, dc.chunk_text, dc.chunk_metadata,
+                           d.file_name, d.source_type, d.project_id,
+                           (dc.embedding <-> %s::vector) as distance
+                    FROM document_chunks dc
+                    JOIN documents d ON dc.document_id = d.document_id
+                """
+                
+                # ベクトルをpostgresのvector表現に変換
+                vector_str = '[' + ','.join(map(str, query_embedding)) + ']'
+                params = [vector_str]
+                
+                # プロジェクト絞り込み
+                if project_id is not None:
+                    base_query += " WHERE d.project_id = %s"
+                    params.append(project_id)
+                
+                # 類似度順でソート・制限
+                base_query += " ORDER BY distance ASC LIMIT %s"
+                params.append(limit)
+                
+                cursor.execute(base_query, params)
+                results = cursor.fetchall()
             
-            # プロジェクト絞り込み
-            if project_id is not None:
-                base_query += " WHERE d.project_id = %s"
-                params.append(project_id)
-            
-            # 類似度順でソート・制限
-            base_query += " ORDER BY distance ASC LIMIT %s"
-            params.append(limit)
-            
-            cursor = db.execute(base_query, params)
-            results = cursor.fetchall()
-            
-            # 結果を整形
-            search_results = []
-            for result in results:
-                search_results.append({
-                    "chunk_id": result[0],
-                    "document_id": result[1],
-                    "document_name": result[4],
-                    "chunk_text": result[2],
-                    "similarity_score": 1.0 - result[7],  # 距離を類似度スコアに変換
-                    "source_type": result[5],
-                    "project_id": result[6],
-                    "metadata": result[3] if result[3] else {}
-                })
-            
-            logger.info(f"ベクトル検索実行: {len(search_results)}件の結果")
-            return search_results
+                # 結果を整形
+                search_results = []
+                for result in results:
+                    search_results.append({
+                        "chunk_id": result[0],
+                        "document_id": result[1],
+                        "document_name": result[4],
+                        "chunk_text": result[2],
+                        "similarity_score": 1.0 - result[7],  # 距離を類似度スコアに変換
+                        "source_type": result[5],
+                        "project_id": result[6],
+                        "metadata": result[3] if result[3] else {}
+                    })
+                
+                logger.info(f"ベクトル検索実行: {len(search_results)}件の結果")
+                return search_results
+                
+            finally:
+                cursor.close()
+                connection.close()
             
         except Exception as e:
             logger.error(f"ベクトル検索エラー: {e}")

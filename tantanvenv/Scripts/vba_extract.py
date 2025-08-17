@@ -1,4 +1,4 @@
-#!C:\Users\nonan\Desktop\Idea Spark\backend\tantanvenv\Scripts\python.exe
+#!C:\Users\nonan\Desktop\tantan\backend\tantanvenv\Scripts\python.exe
 
 ##############################################################################
 #
