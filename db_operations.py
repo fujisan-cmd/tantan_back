@@ -573,6 +573,59 @@ def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
     finally:
         db.close()
 
+# db_operations.py に以下の関数を追加
+
+def get_document_by_id(document_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """指定されたdocument_idの文書を取得（ユーザー権限チェック付き）"""
+    
+    db = SessionLocal()
+    try:
+        query = select(Document.document_id, Document.file_name, Document.project_id, Document.user_id).filter(
+            Document.document_id == document_id,
+            Document.user_id == user_id
+        )
+        result = db.execute(query).first()
+        
+        if result:
+            return {
+                "document_id": result[0],
+                "file_name": result[1],
+                "project_id": result[2],
+                "user_id": result[3]
+            }
+        return None
+        
+    except Exception as e:
+        logger.error(f"文書取得エラー: {e}")
+        return None
+    finally:
+        db.close()
+
+def delete_documents_record(document_id: int, user_id: int) -> bool:
+    """指定された文書を削除"""
+    
+    db = SessionLocal()
+    try:
+        with db.begin():
+            delete_query = delete(Document).where(
+                Document.document_id == document_id,
+                Document.user_id == user_id
+            )
+            delete_result = db.execute(delete_query)
+            
+            if delete_result.rowcount == 0:
+                logger.warning(f"削除実行失敗: document_id={document_id}")
+                return False
+            
+            logger.info(f"文書削除成功: document_id={document_id}")
+            return True
+        
+    except Exception as e:
+        logger.error(f"文書削除エラー: {e}")
+        return False
+    finally:
+        db.close()
+        
 def record_consistency_check(project_id: int, user_id: int, analysis_result: Dict[str, str]) -> bool:
     """整合性確認の結果をデータベースに記録"""
     try:
