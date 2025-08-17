@@ -562,6 +562,8 @@ def get_project_documents(project_id: int) -> List[Dict[str, Any]]:
                 "document_id": doc.document_id,
                 "file_name": doc.file_name,
                 "file_type": doc.file_type,
+                "file_size": doc.file_size,
+                "user_email": get_user_by_id(doc.user_id)["email"] if get_user_by_id(doc.user_id) else None,  # ここを修正
                 "source_type": doc.source_type.value,  # Enumなら .value
                 "uploaded_at": doc.uploaded_at,
             }
@@ -1089,6 +1091,56 @@ def get_edit_id_by_version(project_id: int, version: int) -> int | None:
         return None
     except Exception as e:
         logger.error(f"edit_id取得エラー: {e}")
+        return None
+    finally:
+        db.close()
+
+def get_project_research_results(project_id: int) -> list:
+    """指定されたproject_idのリサーチ履歴（research_resultsの全項目）を取得"""
+    db = SessionLocal()
+    try:
+        results = db.query(ResearchResult, EditHistory, User).\
+            join(EditHistory, ResearchResult.edit_id == EditHistory.edit_id).\
+            join(User, ResearchResult.user_id == User.user_id).\
+            filter(EditHistory.project_id == project_id).\
+            order_by(ResearchResult.researched_at.desc()).all()
+        research_list = []
+        for rr, eh, user in results:
+            research_list.append({
+                "research_id": rr.research_id,
+                "edit_id": rr.edit_id,
+                "user_id": rr.user_id,
+                "user_email": user.email,
+                "researched_at": rr.researched_at,
+                "result_text": rr.result_text,
+            })
+        return research_list
+    except Exception as e:
+        logger.error(f"リサーチ履歴取得エラー: {e}")
+        return []
+    finally:
+        db.close()
+
+def get_research_result_by_id(research_id: int) -> dict | None:
+    """指定されたresearch_idのリサーチ内容を1件取得"""
+    db = SessionLocal()
+    try:
+        result = db.query(ResearchResult, User).\
+            join(User, ResearchResult.user_id == User.user_id).\
+            filter(ResearchResult.research_id == research_id).first()
+        if result:
+            rr, user = result
+            return {
+                "research_id": rr.research_id,
+                "edit_id": rr.edit_id,
+                "user_id": rr.user_id,
+                "user_email": user.email,
+                "researched_at": rr.researched_at,
+                "result_text": rr.result_text,
+            }
+        return None
+    except Exception as e:
+        logger.error(f"リサーチ内容取得エラー: {e}")
         return None
     finally:
         db.close()

@@ -32,7 +32,7 @@ from db_operations import (
     AutoAnswerGenerationRequest, AutoAnswerGenerationResponse,
     # リーンキャンバス更新案生成機能用追加
     CanvasUpdateRequest, CanvasUpdateResponse,
-    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id, get_project_history_list, get_edit_id_by_version
+    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id, get_project_history_list, get_edit_id_by_version, get_project_research_results, get_research_result_by_id
 )
 
 # RAG機能用サービス
@@ -327,8 +327,85 @@ def execute_research(project_id: int, current_user_id: int = Depends(get_current
     output_content2 = response2.choices[0].message.content.strip() # 更新提案のテキスト
     print(f"更新提案: {output_content2}")
 
+    # --- ここから追加: output_content2 から新しいリーンキャンバスを生成 ---
+    import re, json
+    proposed_canvas = None
+    try:
+        # "proposed_canvas": { ... } 形式 or "updated_canvas": { ... } 形式を抽出
+        match = re.search(r'"(proposed_canvas|updated_canvas)"\s*:\s*\{.*?\}', output_content2, re.DOTALL)
+        if match:
+            # {"proposed_canvas": {...}} 形式に整形してパース
+            canvas_text = '{' + match.group() + '}'
+            canvas_data = json.loads(canvas_text)
+            proposed_canvas = canvas_data.get("proposed_canvas") or canvas_data.get("updated_canvas")
+        else:
+            # 直接全体がJSONの場合
+            try:
+                parsed = json.loads(output_content2)
+                proposed_canvas = parsed.get("proposed_canvas") or parsed.get("updated_canvas")
+            except Exception:
+                proposed_canvas = None
+        # 差分形式（全項目がない場合）はここで適用
+        if not proposed_canvas:
+            # 差分JSON部分だけを抽出
+            diff_match = re.search(r'\{[\s\S]*\}', output_content2)
+            if diff_match:
+                try:
+                    diff_json = json.loads(diff_match.group())
+                    # 元のキャンバスをコピーして差分を上書き
+                    proposed_canvas = dict(current_canvas)
+                    for k, v in diff_json.items():
+                        # キー名を小文字に統一して比較
+                        for orig_k in proposed_canvas.keys():
+                            if orig_k.lower() == k.lower():
+                                proposed_canvas[orig_k] = v
+                                break
+                        else:
+                            # 新規項目ならそのまま追加
+                            proposed_canvas[k] = v
+                except Exception as e:
+                    print(f"差分適用エラー: {e}")
+                    proposed_canvas = dict(current_canvas)
+            else:
+                proposed_canvas = dict(current_canvas)
+    except Exception as e:
+        print(f"proposed_canvas抽出エラー: {e}")
+        proposed_canvas = dict(current_canvas)
+    # --- ここまで追加 ---
+
+    # === ここから追加: 「更新例1:」などの接頭辞を除去 ===
+    def remove_prefixes(val):
+        if isinstance(val, str):
+            return re.sub(r'^更新例[0-9]+[:：]\s*', '', val).strip()
+        return val
+    if proposed_canvas and isinstance(proposed_canvas, dict):
+        for k in proposed_canvas:
+            proposed_canvas[k] = remove_prefixes(proposed_canvas[k])
+    # === ここまで追加 ===
+
     is_success = insert_research_result(edit_id, current_user_id, output_content1)
-    return {"success": is_success, "research_result": output_content1, "update_proposal": output_content2}
+
+    # update_proposalにproposed_canvasの内容も含める
+    import json as _json
+    update_proposal_with_canvas = output_content2
+    if proposed_canvas:
+        try:
+            # 既存のupdate_proposalがJSONでなければproposed_canvasを追加
+            update_proposal_dict = None
+            try:
+                update_proposal_dict = _json.loads(output_content2)
+            except Exception:
+                update_proposal_dict = None
+            # proposed_canvasをupdate_proposalに追加
+            update_proposal_with_canvas = _json.dumps({
+                "update_proposal": update_proposal_dict if update_proposal_dict else output_content2,
+                "proposed_canvas": proposed_canvas
+            }, ensure_ascii=False)
+        except Exception as e:
+            print(f"update_proposal/proposed_canvas合成エラー: {e}")
+            update_proposal_with_canvas = output_content2
+
+    return {"success": is_success, "research_result": output_content1, "update_proposal": update_proposal_with_canvas, "canvas_data": current_canvas, "proposed_canvas": proposed_canvas}
 
 @app.delete("/projects/{project_id}/research/{research_id}")
 def delete_one_research(project_id: int, research_id: int):
@@ -764,14 +841,17 @@ async def interview_to_canvas(
 
         # インタビューメモ取得
         note = get_interview_note_by_id(request.note_id)
+        logger.info(f"[DEBUG] note: {note}")
         if not note:
             return InterviewToCanvasResponse(success=False, message="インタビューメモが見つかりません")
 
         # 現行キャンバス取得
         latest_edit_id = get_latest_edit_id(project_id)
+        logger.info(f"[DEBUG] latest_edit_id: {latest_edit_id}")
         if not latest_edit_id:
             return InterviewToCanvasResponse(success=False, message="現行キャンバスが見つかりません")
         latest_canvas_details = get_canvas_details(latest_edit_id)
+        logger.info(f"[DEBUG] latest_canvas_details: {latest_canvas_details}")
         if not latest_canvas_details:
             return InterviewToCanvasResponse(success=False, message="キャンバス詳細が見つかりません")
 
@@ -783,21 +863,21 @@ async def interview_to_canvas(
                 "perspective": str(note["interview_type"])
             }
         ]
+        logger.info(f"[DEBUG] user_answers: {user_answers}")
         result = await canvas_update_service.generate_canvas_update(
             project_name=project["project_name"],
             canvas_data=latest_canvas_details,
             user_answers=user_answers
         )
-        if not result["success"]:
-            return InterviewToCanvasResponse(success=False, message=result.get("message", "LLM生成に失敗"))
-
-        # 現行キャンバスのfield部分を抽出
-        current_canvas = next(iter(latest_canvas_details.values())) if isinstance(latest_canvas_details, dict) else latest_canvas_details
-        proposed_canvas = result["updated_canvas"]
-
+        logger.info(f"[DEBUG] canvas_update_service result: {result}")
+        proposed_canvas = result.get("updated_canvas") if result else None
+        # current_canvasはlatest_canvas_detailsの値部分のみ渡す
+        current_canvas_field = None
+        if latest_canvas_details:
+            current_canvas_field = next(iter(latest_canvas_details.values()))
         return InterviewToCanvasResponse(
             success=True,
-            current_canvas=current_canvas,
+            current_canvas=current_canvas_field,
             proposed_canvas=proposed_canvas,
             message="提案キャンバスを生成しました"
         )
@@ -837,6 +917,28 @@ def get_project_history_list_endpoint(project_id: int):
     except Exception as e:
         logger.error(f"編集履歴リスト取得エラー: {e}")
         raise HTTPException(status_code=500, detail="編集履歴リストの取得に失敗しました")
+
+@app.get("/projects/{project_id}/research-list")
+def get_project_research_list(project_id: int):
+    """指定プロジェクトのリサーチ履歴リストを返す"""
+    try:
+        research_list = get_project_research_results(project_id)
+        return research_list
+    except Exception as e:
+        logger.error(f"リサーチ履歴リスト取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="リサーチ履歴リストの取得に失敗しました")
+
+@app.get("/projects/{project_id}/research-result/{research_id}")
+def get_research_result(project_id: int, research_id: int):
+    """指定research_idのリサーチ内容を返す"""
+    try:
+        result = get_research_result_by_id(research_id)
+        if not result or result["edit_id"] is None:
+            raise HTTPException(status_code=404, detail="リサーチ内容が見つかりません")
+        return result
+    except Exception as e:
+        logger.error(f"リサーチ内容取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="リサーチ内容の取得に失敗しました")
 
 @app.get("/projects/{project_id}/{version}")
 def get_canvas_by_version(project_id: int, version: int):
