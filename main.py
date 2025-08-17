@@ -21,7 +21,7 @@ from db_operations import (
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version, get_project_by_id,
     insert_project, insert_edit_history, insert_canvas_details, 
-    insert_research_result, insert_interview_notes, get_all_interview_notes,
+    insert_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
@@ -379,10 +379,27 @@ def save_interview_notes(request: InterviewNotesRequest):
         raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
         
     return {"success": True, "message": "インタビューメモが正常に登録されました"}
+
 @app.get("/projects/{project_id}/interview-notes")
 def get_interview_notes(project_id: int):
     result = get_all_interview_notes(project_id)
     return result
+
+@app.delete("/projects/{project_id}/interview-notes/{note_id}")
+def delete_interview_note(project_id: int, note_id: int):
+    """インタビューメモを削除"""
+    note = get_interview_note_by_id(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="インタビューメモが見つかりません")
+    
+    if note["project_id"] != project_id:
+        raise HTTPException(status_code=403, detail="このプロジェクトのインタビューメモではありません")
+    
+    success = delete_one_note(note_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="インタビューメモの削除に失敗しました")
+    
+    return {"success": True, "message": "インタビューメモが正常に削除されました"}
 
 # === RAG機能用エンドポイント ===
 
