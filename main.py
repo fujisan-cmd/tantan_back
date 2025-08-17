@@ -32,7 +32,7 @@ from db_operations import (
     AutoAnswerGenerationRequest, AutoAnswerGenerationResponse,
     # リーンキャンバス更新案生成機能用追加
     CanvasUpdateRequest, CanvasUpdateResponse,
-    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id
+    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id, get_project_history_list, get_edit_id_by_version
 )
 
 # RAG機能用サービス
@@ -827,3 +827,22 @@ def get_documents(project_id: int, current_user_id: int = Depends(get_current_us
     except Exception as e:
         logger.error(f"文書一覧取得エラー: {e}")
         raise HTTPException(status_code=500, detail="文書一覧の取得に失敗しました")
+
+@app.get("/projects/{project_id}/history-list")
+def get_project_history_list_endpoint(project_id: int):
+    """指定プロジェクトの編集履歴リストを返す"""
+    try:
+        history_list = get_project_history_list(project_id)
+        return history_list
+    except Exception as e:
+        logger.error(f"編集履歴リスト取得エラー: {e}")
+        raise HTTPException(status_code=500, detail="編集履歴リストの取得に失敗しました")
+
+@app.get("/projects/{project_id}/{version}")
+def get_canvas_by_version(project_id: int, version: int):
+    """指定したバージョンのリーンキャンバス内容を返す"""
+    edit_id = get_edit_id_by_version(project_id, version)
+    if not edit_id:
+        raise HTTPException(status_code=404, detail="指定バージョンのキャンバスが見つかりません")
+    details = get_canvas_details(edit_id)
+    return details

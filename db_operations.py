@@ -1000,4 +1000,44 @@ def delete_document_record(document_id: int, user_id: int) -> bool:
     finally:
         db.close()
 
+def get_project_history_list(project_id: int) -> list:
+    """指定されたプロジェクトIDの編集履歴リストを取得（バージョンごと）"""
+    db = SessionLocal()
+    try:
+        histories = db.query(EditHistory).filter(
+            EditHistory.project_id == project_id
+        ).order_by(EditHistory.version.asc()).all()
+        result = []
+        for h in histories:
+            result.append({
+                "version": h.version,
+                "last_updated": h.last_updated,
+                "user_id": h.user_id,
+                "update_category": h.update_category.value if hasattr(h.update_category, 'value') else h.update_category,
+                "update_comment": h.update_comment
+            })
+        return result
+    except Exception as e:
+        logger.error(f"編集履歴リスト取得エラー: {e}")
+        return []
+    finally:
+        db.close()
+
+def get_edit_id_by_version(project_id: int, version: int) -> int | None:
+    """指定されたproject_idとversionからedit_idを取得"""
+    db = SessionLocal()
+    try:
+        result = db.query(EditHistory).filter(
+            EditHistory.project_id == project_id,
+            EditHistory.version == version
+        ).first()
+        if result:
+            return result.edit_id
+        return None
+    except Exception as e:
+        logger.error(f"edit_id取得エラー: {e}")
+        return None
+    finally:
+        db.close()
+
 # === RAG機能用追加 END ===
