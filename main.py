@@ -21,11 +21,11 @@ from db_operations import (
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version, get_project_by_id,
     insert_project, insert_edit_history, insert_canvas_details, 
-    insert_research_result, remove_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note,
+    insert_research_result, remove_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note, 
+    delete_documents_record, get_document_by_id,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
-    delete_document_record,  # 追加
     # 整合性確認機能用追加
     ConsistencyCheckRequest, ConsistencyCheckResponse,
     # AI回答自動生成機能用追加
@@ -846,3 +846,33 @@ def get_canvas_by_version(project_id: int, version: int):
         raise HTTPException(status_code=404, detail="指定バージョンのキャンバスが見つかりません")
     details = get_canvas_details(edit_id)
     return details
+#文書削除機能
+# main.py の文書削除エンドポイント（インタビューメモ削除と同じパターン）
+
+@app.delete("/projects/{project_id}/documents/{document_id}")
+def delete_document_endpoint(
+    project_id: int,
+    document_id: int,
+    current_user_id: int = Depends(get_current_user)
+):
+    """文書を削除"""
+    # 文書取得（権限チェック付き）
+    document = get_document_by_id(document_id, current_user_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="文書が見つからないか、削除権限がありません")
+    
+    # プロジェクトID整合性チェック
+    if document["project_id"] != project_id:
+        raise HTTPException(status_code=403, detail="このプロジェクトの文書ではありません")
+    
+    # 削除実行
+    success = delete_documents_record(document_id, current_user_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="文書の削除に失敗しました")
+    
+    return {
+        "success": True, 
+        "message": "文書が正常に削除されました",
+        "document_id": document_id
+    }
+

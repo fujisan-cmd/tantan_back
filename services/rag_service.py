@@ -22,7 +22,7 @@ class RAGService:
     
     def __init__(self):
         # OpenAI設定
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("API_KEY")
         if not self.api_key:
             logger.warning("OPENAI_API_KEYが設定されていません")
         
