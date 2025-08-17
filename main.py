@@ -22,7 +22,7 @@ from db_operations import (
     get_canvas_details, get_latest_version, get_project_by_id,
     insert_project, insert_edit_history, insert_canvas_details, 
     insert_research_result, remove_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note, 
-    delete_documents_record, get_document_by_id,
+    delete_documents_record, get_document_by_id, delete_document_record,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
