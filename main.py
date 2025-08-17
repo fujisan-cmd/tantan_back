@@ -21,7 +21,7 @@ from db_operations import (
     get_user_by_id, get_user_projects, create_tables, get_latest_edit_id, get_project_documents,
     get_canvas_details, get_latest_version, get_project_by_id,
     insert_project, insert_edit_history, insert_canvas_details, 
-    insert_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note,
+    insert_research_result, remove_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
@@ -329,6 +329,13 @@ def execute_research(project_id: int, current_user_id: int = Depends(get_current
 
     is_success = insert_research_result(edit_id, current_user_id, output_content1)
     return {"success": is_success, "research_result": output_content1, "update_proposal": output_content2}
+
+@app.delete("/projects/{project_id}/research/{research_id}")
+def delete_one_research(project_id: int, research_id: int):
+    result = remove_research_result(research_id)
+    if not result:
+        raise HTTPException(status_code=500, detail="リサーチ結果の削除に失敗しました")
+    return {"success": True, "message": "リサーチ結果が正常に削除されました"}
 
 @app.post("/projects/{project_id}/interview-preparation")
 def interview_preparation(project_id: int, sel: str):
