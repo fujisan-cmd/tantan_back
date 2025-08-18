@@ -291,121 +291,173 @@ def update_canvas(request: ProjectUpdateRequest):
         raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
 
 @app.post("/projects/{project_id}/research")
-def execute_research(project_id: int, current_user_id: int = Depends(get_current_user)):
-    edit_id = get_latest_edit_id(project_id)
-    details = get_canvas_details(edit_id)
-    current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
-
-    # 本当はここの検索対象にRAGが追加される
-    request1 = '現在リーンキャンバスをもとに新規事業開発を検討しています。以下に開発内容の概要を提示しますので、' \
-            '以下の調査項目欄に指定した観点で調査を行ってください。' \
-            '## 調査項目 - 3C分析(市場の成長性・競合他社状況・顧客のニーズ) - 技術調査(必要な技術・実現可能性) - 法規制調査 ' \
-            '調査結果は簡潔に箇条書きでまとめ、余計な文章を挿入せずに、必ず以下の書式欄を埋める形で回答してください。' \
-            '【市場調査結果】1. 市場の成長性 2. 競合分析 3. 顧客ニーズ調査【技術調査結果】1. 必要な技術と要求仕様 2. 実現可能性【法規制事項】1. 規制' \
-            '## アイデア概要 '+str(current_canvas)
-    response1 = client.chat.completions.create(
-        model='gpt-4o', 
-        messages=[
-            {'role': 'user', "content": request1},
-        ],
-    )
-    output_content1 = response1.choices[0].message.content.strip() # 調査結果のテキスト
+async def execute_research(project_id: int, current_user_id: int = Depends(get_current_user)):
+    print(f"=== リサーチAPI開始 ===")
+    print(f"Project ID: {project_id}, User ID: {current_user_id}")
     
-    request2 = '現在リーンキャンバスをもとに新規事業開発を検討しています。以下に開発内容の概要は以下の通りです。' \
-            + str(current_canvas) + \
-            'また、このリーンキャンバスをもとに外部環境調査などを行った結果が以下の通りです。' \
-            + output_content1 + \
-            '両者を比較したうえで、リーンキャンバスを更新した方が良い項目とその具体的な更新例を3つ提案してください。' \
-            'その際、必ず 項目1: 更新例1, 項目2: 更新例2, 項目3: 更新例3 のように、JSON形式で回答してください。' \
-            'なお、更新例はなるべく元のリーンキャンバスの文体に合わせてください。'
-    response2 = client.chat.completions.create(
-        model='gpt-4o', 
-        messages=[
-            {'role': 'user', "content": request2},
-        ],
-    )
-    output_content2 = response2.choices[0].message.content.strip() # 更新提案のテキスト
-    print(f"更新提案: {output_content2}")
-
-    # --- ここから追加: output_content2 から新しいリーンキャンバスを生成 ---
-    import re, json
-    proposed_canvas = None
     try:
-        # "proposed_canvas": { ... } 形式 or "updated_canvas": { ... } 形式を抽出
-        match = re.search(r'"(proposed_canvas|updated_canvas)"\s*:\s*\{.*?\}', output_content2, re.DOTALL)
-        if match:
-            # {"proposed_canvas": {...}} 形式に整形してパース
-            canvas_text = '{' + match.group() + '}'
-            canvas_data = json.loads(canvas_text)
-            proposed_canvas = canvas_data.get("proposed_canvas") or canvas_data.get("updated_canvas")
+        edit_id = get_latest_edit_id(project_id)
+        details = get_canvas_details(edit_id)
+        current_canvas = next(iter(details.values())) # detailsは2重の辞書になっているので、内側だけを取得
+        print(f"Canvas取得完了: {len(current_canvas)} fields")
+
+
+
+
+        # RAGサービスを初期化
+        print("RAGサービス初期化中...")
+        rag_service = RAGService()
+        print("RAGサービス初期化完了")
+        
+        # キャンバス内容からRAG検索クエリを構築
+        search_query = f"{current_canvas.get('unique_value_proposition', '')} {current_canvas.get('problem', '')} {current_canvas.get('solution', '')}"
+        print(f"=== RAGデバッグ情報 ===")
+        print(f"Project ID: {project_id}")
+        print(f"Search Query: {search_query}")
+        
+        # アップロードされたドキュメントから関連情報を検索
+        relevant_documents = await rag_service.search_relevant_content(
+            query=search_query,
+            project_id=project_id,
+            limit=5
+        )
+        
+        print(f"RAG検索結果数: {len(relevant_documents)}")
+        if relevant_documents:
+            print(f"最初の結果: {relevant_documents[0]}")
         else:
-            # 直接全体がJSONの場合
-            try:
-                parsed = json.loads(output_content2)
-                proposed_canvas = parsed.get("proposed_canvas") or parsed.get("updated_canvas")
-            except Exception:
-                proposed_canvas = None
-        # 差分形式（全項目がない場合）はここで適用
-        if not proposed_canvas:
-            # 差分JSON部分だけを抽出
-            diff_match = re.search(r'\{[\s\S]*\}', output_content2)
-            if diff_match:
-                try:
-                    diff_json = json.loads(diff_match.group())
-                    # 元のキャンバスをコピーして差分を上書き
-                    proposed_canvas = dict(current_canvas)
-                    for k, v in diff_json.items():
-                        # キー名を小文字に統一して比較
-                        for orig_k in proposed_canvas.keys():
-                            if orig_k.lower() == k.lower():
-                                proposed_canvas[orig_k] = v
-                                break
-                        else:
-                            # 新規項目ならそのまま追加
-                            proposed_canvas[k] = v
-                except Exception as e:
-                    print(f"差分適用エラー: {e}")
-                    proposed_canvas = dict(current_canvas)
-            else:
-                proposed_canvas = dict(current_canvas)
-    except Exception as e:
-        print(f"proposed_canvas抽出エラー: {e}")
-        proposed_canvas = dict(current_canvas)
-    # --- ここまで追加 ---
+            print("RAG検索結果なし")
+        
+        # RAG結果をコンテキストとして組み込み
+        document_context = ""
+        if relevant_documents:
+            document_context = "\n\n## アップロードされたドキュメントからの関連情報:\n"
+            for i, doc in enumerate(relevant_documents, 1):
+                document_context += f"{i}. ドキュメント名: {doc.get('document_name', 'unknown')}\n"
+                document_context += f"   内容: {doc.get('chunk_text', '')}\n"
+                document_context += f"   類似度: {doc.get('similarity_score', 0):.3f}\n\n"
+            print(f"Document Context: {document_context[:200]}...")
+        else:
+            print("Document Context: なし（RAG結果が空のため）")
+        
+        # リサーチプロンプトを構築（安全な形で）
+        request1 = f'''新規事業開発に関する市場調査を行ってください。以下のビジネス概要に基づいて分析してください。
 
-    # === ここから追加: 「更新例1:」などの接頭辞を除去 ===
-    def remove_prefixes(val):
-        if isinstance(val, str):
-            return re.sub(r'^更新例[0-9]+[:：]\s*', '', val).strip()
-        return val
-    if proposed_canvas and isinstance(proposed_canvas, dict):
-        for k in proposed_canvas:
-            proposed_canvas[k] = remove_prefixes(proposed_canvas[k])
-    # === ここまで追加 ===
+## ビジネス概要
+{str(current_canvas)}
 
-    is_success = insert_research_result(edit_id, current_user_id, output_content1)
+## 調査項目
+以下の観点で分析してください：
+- 3C分析（市場の成長性・競合状況・顧客ニーズ）
+- 技術調査（必要技術・実現可能性）
+- 法規制事項
 
-    # update_proposalにproposed_canvasの内容も含める
-    import json as _json
-    update_proposal_with_canvas = output_content2
-    if proposed_canvas:
+## 関連情報
+{document_context if document_context else "追加の関連資料はありません。"}
+
+## 回答形式
+以下の形式で回答してください：
+
+【市場調査結果】
+1. 市場の成長性
+2. 競合分析
+3. 顧客ニーズ調査
+
+【技術調査結果】
+1. 必要な技術と要求仕様
+2. 実現可能性
+
+【法規制事項】
+1. 規制'''
+        
+        response1 = client.chat.completions.create(
+            model='gpt-4o', 
+            messages=[
+                {'role': 'user', "content": request1},
+            ],
+        )
+        output_content1 = response1.choices[0].message.content.strip() # 調査結果のテキスト
+        
+        request2 = '''現在リーンキャンバスをもとに新規事業開発を検討しています。
+
+## 現在のリーンキャンバス
+''' + str(current_canvas) + '''
+
+## リサーチ結果
+''' + output_content1 + '''
+
+## 指示
+リサーチ結果を踏まえて、リーンキャンバスの各項目を更新すべき具体的な提案を行ってください。
+以下のJSON形式で、更新が必要な項目のみを含めて回答してください：
+
+```json
+{
+  "updates": [
+    {
+      "field": "キャンバス項目名（英語）",
+      "field_japanese": "キャンバス項目名（日本語）", 
+      "before": "現在の内容",
+      "after": "更新後の内容",
+      "reason": "更新理由の説明"
+    }
+  ]
+}
+```
+
+キャンバス項目名は以下から選択してください：
+- problem（顧客課題）
+- customer_segments（顧客セグメント）
+- unique_value_proposition（独自の価値提案）
+- solution（解決策）
+- channels（販路）
+- revenue_streams（収益の流れ）
+- cost_structure（費用構造）
+- key_metrics（主要指標）
+- unfair_advantage（圧倒的優位性）
+- early_adopters（アーリーアダプター）
+- existing_alternatives（代替品）
+
+更新例は元のリーンキャンバスの文体に合わせ、具体的で実用的な内容にしてください。'''
+        response2 = client.chat.completions.create(
+            model='gpt-4o', 
+            messages=[
+                {'role': 'user', "content": request2},
+            ],
+        )
+        output_content2 = response2.choices[0].message.content.strip() # 更新提案のテキスト
+        print(f"更新提案: {output_content2}")
+
+        # JSON形式の更新提案を構造化データとしてパース
+        structured_updates = []
         try:
-            # 既存のupdate_proposalがJSONでなければproposed_canvasを追加
-            update_proposal_dict = None
-            try:
-                update_proposal_dict = _json.loads(output_content2)
-            except Exception:
-                update_proposal_dict = None
-            # proposed_canvasをupdate_proposalに追加
-            update_proposal_with_canvas = _json.dumps({
-                "update_proposal": update_proposal_dict if update_proposal_dict else output_content2,
-                "proposed_canvas": proposed_canvas
-            }, ensure_ascii=False)
+            import re
+            import json
+            
+            # JSONブロックを抽出
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', output_content2, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+                updates_data = json.loads(json_str)
+                structured_updates = updates_data.get('updates', [])
+                print(f"構造化された更新提案: {len(structured_updates)}件")
+            else:
+                print("JSON形式の更新提案が見つかりません")
         except Exception as e:
-            print(f"update_proposal/proposed_canvas合成エラー: {e}")
-            update_proposal_with_canvas = output_content2
+            print(f"更新提案のパースエラー: {e}")
 
-    return {"success": is_success, "research_result": output_content1, "update_proposal": update_proposal_with_canvas, "canvas_data": current_canvas, "proposed_canvas": proposed_canvas}
+        is_success = insert_research_result(edit_id, current_user_id, output_content1)
+        return {
+            "success": is_success, 
+            "research_result": output_content1, 
+            "update_proposal": output_content2,
+            "canvas_data": current_canvas,  # 現在のキャンバスデータを追加
+            "structured_updates": structured_updates  # 構造化された更新提案を追加
+        }
+        
+    except Exception as e:
+        logger.error(f"リサーチ実行エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"リサーチ実行中にエラーが発生しました: {str(e)}")
+
 
 @app.delete("/projects/{project_id}/research/{research_id}")
 def delete_one_research(project_id: int, research_id: int):
@@ -413,6 +465,7 @@ def delete_one_research(project_id: int, research_id: int):
     if not result:
         raise HTTPException(status_code=500, detail="リサーチ結果の削除に失敗しました")
     return {"success": True, "message": "リサーチ結果が正常に削除されました"}
+
 
 @app.post("/projects/{project_id}/interview-preparation")
 def interview_preparation(project_id: int, sel: str):
@@ -907,6 +960,7 @@ def get_documents(project_id: int, current_user_id: int = Depends(get_current_us
     except Exception as e:
         logger.error(f"文書一覧取得エラー: {e}")
         raise HTTPException(status_code=500, detail="文書一覧の取得に失敗しました")
+
 
 @app.get("/projects/{project_id}/history-list")
 def get_project_history_list_endpoint(project_id: int):
