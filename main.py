@@ -13,7 +13,7 @@ load_dotenv()
 api_key = os.getenv("API_KEY")
 client = OpenAI(api_key=api_key)
 
-# ローカルモジュールのインポート
+# ローカルモジュールインポート
 from connect_PostgreSQL import test_database_connection
 from db_operations import (
     UserCreate, UserLogin, AuthResponse, UserResponse, ProjectResponse, ProjectCreateRequest, ProjectWithAI, ProjectUpdateRequest, InterviewNotesRequest,
