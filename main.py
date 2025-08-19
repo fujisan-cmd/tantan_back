@@ -34,7 +34,8 @@ from db_operations import (
     AutoAnswerGenerationRequest, AutoAnswerGenerationResponse,
     # リーンキャンバス更新案生成機能用追加
     CanvasUpdateRequest, CanvasUpdateResponse,
-    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id, get_project_history_list, get_edit_id_by_version, get_project_research_results, get_research_result_by_id
+    InterviewToCanvasRequest, InterviewToCanvasResponse, get_interview_note_by_id, get_project_history_list, get_edit_id_by_version, get_project_research_results, get_research_result_by_id,
+    update_interview_notes # ← update_interview_notesを追加
 )
 
 # RAG機能用サービス
@@ -548,10 +549,23 @@ def interview_preparation(project_id: int, sel: str):
 def save_interview_notes(request: InterviewNotesRequest):
     import traceback
     try:
-        note_id = insert_interview_notes(request.edit_id, request.project_id, request.user_id, request.interviewee_name, request.interview_date, request.interview_type, request.interview_note)
-        if not note_id:
-            raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
-        return {"success": True, "message": "インタビューメモが正常に登録されました", "note_id": note_id}
+        # note_idがリクエストに含まれていれば更新、なければ新規作成
+        if hasattr(request, 'note_id') and request.note_id:
+            success = update_interview_notes(
+                request.note_id,
+                request.interviewee_name,
+                request.interview_date,
+                request.interview_type,
+                request.interview_note
+            )
+            if not success:
+                raise HTTPException(status_code=500, detail="インタビューメモの更新に失敗しました")
+            return {"success": True, "message": "インタビューメモが正常に更新されました", "note_id": request.note_id}
+        else:
+            note_id = insert_interview_notes(request.edit_id, request.project_id, request.user_id, request.interviewee_name, request.interview_date, request.interview_type, request.interview_note)
+            if not note_id:
+                raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
+            return {"success": True, "message": "インタビューメモが正常に登録されました", "note_id": note_id}
     except Exception as e:
         import logging
         logging.error(f"save_interview_notesで例外発生: {e}\n{traceback.format_exc()}")

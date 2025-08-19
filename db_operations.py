@@ -224,6 +224,7 @@ class InterviewToCanvasResponse(BaseModel):
     message: Optional[str] = None
 
 class InterviewNotesRequest(BaseModel):
+    note_id: Optional[int] = None  # ← 追加
     edit_id: Optional[int] = None
     project_id: int
     user_id: int
@@ -1270,6 +1271,29 @@ def get_research_result_by_id(research_id: int) -> dict | None:
     except Exception as e:
         logger.error(f"リサーチ内容取得エラー: {e}")
         return None
+    finally:
+        db.close()
+
+def update_interview_notes(note_id: int, interviewee_name: str, interview_date: date, interview_type: str, interview_note: str) -> bool:
+    db = SessionLocal()
+    try:
+        query = update(InterviewNote).where(InterviewNote.note_id == note_id).values(
+            interviewee_name=interviewee_name,
+            interview_date=interview_date,
+            interview_type=interview_type,
+            interview_note=interview_note
+        )
+        with db.begin():
+            result = db.execute(query)
+            if result.rowcount == 0:
+                logger.warning(f"インタビューノート更新失敗: note_id={note_id} は存在しません")
+                return False
+            logger.info(f"インタビューノート更新成功: note_id={note_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"インタビューノート更新エラー: {e}")
+        return False
     finally:
         db.close()
 
