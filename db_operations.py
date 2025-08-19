@@ -724,11 +724,11 @@ def insert_interview_notes(edit_id: Optional[int], project_id: int, user_id: int
             result = db.execute(query)
             note_id = result.inserted_primary_key[0]
             logger.info(f"インタビューノート挿入成功: note_id={note_id}, project_id={project_id}")
-            return True
+            return note_id
     except Exception as e:
         db.rollback()
         logger.error(f"インタビューノート挿入エラー: {e}")
-        return False
+        return None
     finally:
         db.close()
 
