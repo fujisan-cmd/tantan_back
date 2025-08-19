@@ -293,7 +293,7 @@ def update_canvas(request: ProjectUpdateRequest):
         raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
 
 @app.delete("/projects/{project_id}")
-def delete_canvas(project_id: int, user_id: int):
+def delete_canvas(project_id: int, user_id: int = Depends(get_current_user)):
     try:
         edit_id_list = get_all_edit_ids(project_id, user_id)
         for edit_id in edit_id_list:
