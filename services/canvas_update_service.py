@@ -132,46 +132,33 @@ class CanvasUpdateService:
             raise e
     
     def _parse_canvas_update_response(self, response: str) -> Dict[str, Any]:
-        """OpenAIのレスポンスを解析して更新案を抽出"""
         try:
             import json
             import re
-            
+
             updated_canvas_match = re.search(r'"updated_canvas":\s*\{.*?\}', response, re.DOTALL)
-            
             updated_canvas = {}
-            
+
             if updated_canvas_match:
                 canvas_text = "{" + updated_canvas_match.group() + "}"
                 canvas_data = json.loads(canvas_text)
                 updated_canvas = canvas_data.get("updated_canvas", {})
-            
+
             if not updated_canvas:
                 try:
                     full_response = json.loads(response)
                     updated_canvas = full_response.get("updated_canvas", {})
-                except:
-                    pass
-            
+                except Exception as e:
+                    logger.error(f"AIレスポンスJSONパース失敗: {e}\nAIレスポンス: {response}")
+                    raise ValueError("AI応答のパースに失敗しました")
+
+            if not updated_canvas:
+                logger.error(f"AI応答にupdated_canvasが含まれていません。AIレスポンス: {response}")
+                raise ValueError("AI応答にupdated_canvasが含まれていません")
+
             return {
                 "updated_canvas": updated_canvas
             }
-                
         except Exception as e:
-            logger.error(f"JSON解析エラー: {e}")
-            return {
-                "updated_canvas": {
-                    "idea_name": "更新されたアイデア名",
-                    "Problem": "更新された課題",
-                    "Customer_Segments": "更新された顧客セグメント",
-                    "Unique_Value_Proposition": "更新された価値提案",
-                    "Solution": "更新された解決策",
-                    "Channels": "更新されたチャネル",
-                    "Revenue_Streams": "更新された収益源",
-                    "Cost_Structure": "更新されたコスト構造",
-                    "Key_Metrics": "更新された主要指標",
-                    "Unfair_Advantage": "更新された競争優位性",
-                    "Early_Adopters": "更新されたアーリーアダプター",
-                    "Existing_Alternatives": "更新された既存の代替品"
-                }
-            }
+            logger.error(f"JSON解析エラー: {e}\nAIレスポンス: {response}")
+            raise ValueError("AI応答のパースに失敗しました")

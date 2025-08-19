@@ -546,11 +546,16 @@ def interview_preparation(project_id: int, sel: str):
 
 @app.post("/projects/{project_id}/interview-notes")
 def save_interview_notes(request: InterviewNotesRequest):
-    result = insert_interview_notes(request.edit_id, request.project_id, request.user_id, request.interviewee_name, request.interview_date, request.interview_type, request.interview_note)
-    if not result:
-        raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
-        
-    return {"success": True, "message": "インタビューメモが正常に登録されました"}
+    import traceback
+    try:
+        note_id = insert_interview_notes(request.edit_id, request.project_id, request.user_id, request.interviewee_name, request.interview_date, request.interview_type, request.interview_note)
+        if not note_id:
+            raise HTTPException(status_code=500, detail="インタビューメモの登録に失敗しました")
+        return {"success": True, "message": "インタビューメモが正常に登録されました", "note_id": note_id}
+    except Exception as e:
+        import logging
+        logging.error(f"save_interview_notesで例外発生: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"サーバーエラー: {str(e)}")
 
 @app.get("/projects/{project_id}/interview-notes")
 def get_interview_notes(project_id: int):
@@ -916,32 +921,30 @@ async def interview_to_canvas(
     request: InterviewToCanvasRequest,
     current_user_id: int = Depends(get_current_user)
 ):
-    """
-    インタビューメモをもとに現行キャンバス＋提案キャンバスを返す（差分は返さない）
-    """
+    import traceback
     try:
         # プロジェクト存在・権限チェック
         project = get_project_by_id(project_id)
         if not project:
-            return InterviewToCanvasResponse(success=False, message="プロジェクトが見つかりません")
+            raise HTTPException(status_code=404, detail="プロジェクトが見つかりません")
         if project["user_id"] != current_user_id:
-            return InterviewToCanvasResponse(success=False, message="他のユーザーのプロジェクトです")
+            raise HTTPException(status_code=403, detail="他のユーザーのプロジェクトです")
 
         # インタビューメモ取得
         note = get_interview_note_by_id(request.note_id)
         logger.info(f"[DEBUG] note: {note}")
         if not note:
-            return InterviewToCanvasResponse(success=False, message="インタビューメモが見つかりません")
+            raise HTTPException(status_code=404, detail="インタビューメモが見つかりません")
 
         # 現行キャンバス取得
         latest_edit_id = get_latest_edit_id(project_id)
         logger.info(f"[DEBUG] latest_edit_id: {latest_edit_id}")
         if not latest_edit_id:
-            return InterviewToCanvasResponse(success=False, message="現行キャンバスが見つかりません")
+            raise HTTPException(status_code=404, detail="現行キャンバスが見つかりません")
         latest_canvas_details = get_canvas_details(latest_edit_id)
         logger.info(f"[DEBUG] latest_canvas_details: {latest_canvas_details}")
         if not latest_canvas_details:
-            return InterviewToCanvasResponse(success=False, message="キャンバス詳細が見つかりません")
+            raise HTTPException(status_code=404, detail="キャンバス詳細が見つかりません")
 
         # LLM呼び出し用にuser_answers形式へ変換（仮: interview_noteを1件だけ渡す）
         user_answers = [
@@ -958,6 +961,8 @@ async def interview_to_canvas(
             user_answers=user_answers
         )
         logger.info(f"[DEBUG] canvas_update_service result: {result}")
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("message", "キャンバス更新案生成に失敗しました"))
         proposed_canvas = result.get("updated_canvas") if result else None
         # current_canvasはlatest_canvas_detailsの値部分のみ渡す
         current_canvas_field = None
@@ -969,9 +974,12 @@ async def interview_to_canvas(
             proposed_canvas=proposed_canvas,
             message="提案キャンバスを生成しました"
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"interview-to-canvasエラー: {e}")
-        return InterviewToCanvasResponse(success=False, message=f"サーバーエラー: {str(e)}")
+        import traceback
+        logger.error(f"interview-to-canvasエラー: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"サーバーエラー: {str(e)}")
 
 # アプリケーション起動時にテーブル作成
 @app.on_event("startup")
