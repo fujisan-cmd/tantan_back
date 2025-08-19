@@ -52,6 +52,9 @@ ENV/
 env.bak/
 venv.bak/
 .env
+.tantanvenv/
+tantanvenv/
+.venv/
 
 # Environment variables
 .env
@@ -59,13 +62,6 @@ venv.bak/
 .env.development
 .env.test
 .env.production
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
 
 # mkdocs documentation
 /site
@@ -102,9 +98,6 @@ Thumbs.db
 logs/
 *.log
 
-# FastAPI
-instance/
-
 # Uploads
 uploads/
 temp/
@@ -120,10 +113,3 @@ Pipfile.lock
 
 # PEP 582
 __pypackages__/
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py

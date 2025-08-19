@@ -816,6 +816,134 @@ def delete_one_note(note_id: int) -> bool:
     finally:
         db.close()
 
+def get_all_edit_ids(project_id: int, user_id: int) -> List[int]:
+    db = SessionLocal()
+    query = select(EditHistory.edit_id).filter(EditHistory.project_id == project_id, EditHistory.user_id == user_id)
+    try:
+        with db.begin():
+            rows = db.execute(query).all()
+            return [row[0] for row in rows]
+    except Exception as e:
+        db.rollback()
+        logger.error(f"編集履歴取得エラー: {e}")
+        return []
+    finally:
+        db.close()
+
+def remove_detail(edit_id: int) -> bool:
+    db = SessionLocal()
+    query = delete(Detail).where(Detail.edit_id == edit_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            if result.rowcount == 0:
+                logger.warning(f"詳細削除失敗: edit_id={edit_id} は存在しません")
+                return False
+            logger.info(f"詳細削除成功: edit_id={edit_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"詳細削除エラー: {e}")
+        return False
+    finally:
+        db.close()
+
+def get_research_id(edit_id: int, user_id: int) -> int:
+    db = SessionLocal()
+    query = select(ResearchResult.research_id).filter(ResearchResult.edit_id == edit_id, ResearchResult.user_id == user_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            return result.scalar() or 0
+    except Exception as e:
+        db.rollback()
+        logger.error(f"リサーチID取得エラー: {e}")
+        return 0
+    finally:
+        db.close()
+
+def get_note_id(edit_id: int, project_id: int, user_id: int) -> int:
+    db = SessionLocal()
+    query = select(InterviewNote.note_id).filter(InterviewNote.edit_id == edit_id, InterviewNote.project_id == project_id, InterviewNote.user_id == user_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            return result.scalar() or 0
+    except Exception as e:
+        db.rollback()
+        logger.error(f"インタビューノートID取得エラー: {e}")
+        return 0
+    finally:
+        db.close()
+
+def get_doc_id(project_id: int, user_id: int) -> int:
+    db = SessionLocal()
+    query = select(Document.document_id).filter(Document.project_id == project_id, Document.user_id == user_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            return result.scalar() or 0
+    except Exception as e:
+        db.rollback()
+        logger.error(f"ドキュメントID取得エラー: {e}")
+        return 0
+    finally:
+        db.close()
+
+def delete_edit_history(project_id: int) -> bool:
+    db = SessionLocal()
+    query = delete(EditHistory).where(EditHistory.project_id == project_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            if result.rowcount == 0:
+                logger.warning(f"編集履歴削除失敗: project_id={project_id} は存在しません")
+                return False
+            logger.info(f"編集履歴削除成功: project_id={project_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"編集履歴削除エラー: {e}")
+        return False
+    finally:
+        db.close()
+
+def delete_members(project_id: int) -> bool:
+    db = SessionLocal()
+    query = delete(ProjectMember).where(ProjectMember.project_id == project_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            if result.rowcount == 0:
+                logger.warning(f"プロジェクトメンバー削除失敗: project_id={project_id} は存在しません")
+                return False
+            logger.info(f"プロジェクトメンバー削除成功: project_id={project_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"プロジェクトメンバー削除エラー: {e}")
+        return False
+    finally:
+        db.close()
+
+def delete_project(project_id: int) -> bool:
+    db = SessionLocal()
+    query = delete(Project).where(Project.project_id == project_id)
+    try:
+        with db.begin():
+            result = db.execute(query)
+            if result.rowcount == 0:
+                logger.warning(f"プロジェクト削除失敗: project_id={project_id} は存在しません")
+                return False
+            logger.info(f"プロジェクト削除成功: project_id={project_id}")
+            return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"プロジェクト削除エラー: {e}")
+        return False
+    finally:
+        db.close()
+
 # === RAG機能用追加 START ===
 # 注意: データベーススキーマ適用前のため一時的にコメントアウト
 

@@ -23,6 +23,8 @@ from db_operations import (
     insert_project, insert_edit_history, insert_canvas_details, 
     insert_research_result, remove_research_result, insert_interview_notes, get_all_interview_notes, delete_one_note, 
     delete_documents_record, get_document_by_id, delete_document_record,
+    get_all_edit_ids, remove_detail, get_research_id, get_note_id, get_doc_id, 
+    delete_edit_history, delete_members, delete_project,
     # RAG機能用追加
     DocumentUploadResponse, TextDocumentResponse, SearchRequest, SearchResult, CanvasGenerationRequest,
     create_document_record,  # 追加
@@ -289,6 +291,39 @@ def update_canvas(request: ProjectUpdateRequest):
     except Exception as e:
         print(f"キャンバス更新エラー: {e}")
         raise HTTPException(status_code=500, detail=f"キャンバス更新中にエラーが発生しました: {str(e)}")
+
+@app.delete("/projects/{project_id}")
+def delete_canvas(project_id: int, user_id: int):
+    try:
+        edit_id_list = get_all_edit_ids(project_id, user_id)
+        for edit_id in edit_id_list:
+            remove_detail(edit_id)
+            print("詳細削除")
+
+            research_id = get_research_id(edit_id, user_id)
+            remove_research_result(research_id)
+            print("リサーチ結果削除")
+
+            note_id = get_note_id(edit_id, project_id, user_id)
+            delete_one_note(note_id)
+            print("インタビュー結果削除")
+
+            doc_id = get_doc_id(project_id, user_id)
+            delete_document_record(doc_id, user_id)
+            print("ドキュメント削除")
+
+        # edit_history, members, docs, project削除
+        delete_edit_history(project_id)
+        print("編集履歴削除")
+        delete_members(project_id)
+        print("メンバー削除")
+        delete_project(project_id)
+        return {"success": True, "message": "キャンバスが正常に更新されました"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"キャンバス削除エラー: {e}")
+        raise HTTPException(status_code=500, detail=f"キャンバス削除中にエラーが発生しました: {str(e)}")
 
 @app.post("/projects/{project_id}/research")
 async def execute_research(project_id: int, current_user_id: int = Depends(get_current_user)):
