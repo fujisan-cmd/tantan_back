@@ -24,7 +24,7 @@ class RAGService:
         # OpenAI設定
         self.api_key = os.getenv("API_KEY")
         if not self.api_key:
-            logger.warning("OPENAI_API_KEYが設定されていません")
+            logger.warning("API_KEYが設定されていません")
         
         openai.api_key = self.api_key
         
