@@ -11,7 +11,7 @@ class AutoAnswerService:
     """AIによる回答自動生成を行うサービス"""
     
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("API_KEY")
         openai.api_key = self.api_key
         self.model = os.getenv("OPENAI_MODEL", "gpt-4-turbo-preview")
     
